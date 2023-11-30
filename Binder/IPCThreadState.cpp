@@ -53,7 +53,7 @@ int IPCThreadState::waitForResponse(Parcel *reply, int *acquireResult){
         if (mIn.dataAvail() == 0) continue;  //mIn中没有数据，继续循环
         
         //读取回复数据
-        cmd = (uint32_t)mIn.readInt32();
+        cmd = (uint32_t)mIn.readInt32(); //读取cmd
         
         IF_LOG_COMMANDS() {
             alog << "Processing waitForResponse Command: "
@@ -61,8 +61,8 @@ int IPCThreadState::waitForResponse(Parcel *reply, int *acquireResult){
         }
 
         switch (cmd) {
-        case BR_TRANSACTION_COMPLETE:
-            if (!reply && !acquireResult) goto finish;
+        case BR_TRANSACTION_COMPLETE: //第二轮，进到这里  这里是同步的，所以会再次调用talkWithDriver与Binder驱动进行交互
+            if (!reply && !acquireResult) goto finish;  //非同步  直接finish
             break;
         
         case BR_DEAD_REPLY:
@@ -116,7 +116,7 @@ int IPCThreadState::waitForResponse(Parcel *reply, int *acquireResult){
             }
             goto finish;
 
-        default:
+        default: //BR_NOOP
             err = executeCommand(cmd);
             if (err != NO_ERROR) goto finish;
             break;
@@ -243,7 +243,7 @@ int IPCThreadState::talkWithDriver(bool doReceive){
     //Parcel内部数据的内存起始地址
     bwr.write_buffer = (uintptr_t)mOut.data();
 
-    // This is what we'll read.
+    // This is what we'll read.   
     if (doReceive && needRead) { //用户希望读取，同时mIn也需要去读取，这里设置read_size
         bwr.read_size = mIn.dataCapacity();  //进行填写需要read的数据请求
         bwr.read_buffer = (uintptr_t)mIn.data();
@@ -278,7 +278,7 @@ int IPCThreadState::talkWithDriver(bool doReceive){
             alog << "About to read/write, write size = " << mOut.dataSize() << endl;
         }
 #if defined(__ANDROID__)
-        //与Binder驱动进行通信的代码
+        //与Binder驱动进行通信的代码  唯一个地方  与Binder通信
         if (ioctl(mProcess->mDriverFD, BINDER_WRITE_READ, &bwr) >= 0)
             err = NO_ERROR;
         else
