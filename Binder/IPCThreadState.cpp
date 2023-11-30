@@ -47,7 +47,7 @@ int IPCThreadState::waitForResponse(Parcel *reply, int *acquireResult){
 
     while (1) {
         //循环等待结果   将已有的数据进行必要的包装，发送给Binder驱动
-        if ((err=talkWithDriver()) < NO_ERROR) break; //处理与Binder间的交互命令
+        if ((err = talkWithDriver()) < NO_ERROR) break; //处理与Binder间的交互命令
         err = mIn.errorCheck(); //走到这里 Binder Server已经执行完请求，并返回结果  比如getService
         if (err < NO_ERROR) break; //出错退出
         if (mIn.dataAvail() == 0) continue;  //mIn中没有数据，继续循环
@@ -216,7 +216,9 @@ IPCThreadState::~IPCThreadState(){
 }
 
 
-
+/**
+ * 真正调用ioctl 与Binder驱动发送命令的地方
+*/
 int IPCThreadState::talkWithDriver(bool doReceive){
     if (mProcess->mDriverFD <= 0) { //Binder驱动设备还没打开
         return -EBADF;
