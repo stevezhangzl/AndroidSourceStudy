@@ -61,7 +61,9 @@ uint32_t do_find_service(const uint16_t *s, size_t len, uid_t uid, pid_t spid)
     return si->handle;
 }
 
-
+/**
+ * SM具体处理的函数指针
+*/
 int svcmgr_handler(struct binder_state *bs,
                    struct binder_transaction_data *txn,
                    struct binder_io *msg,
@@ -120,7 +122,7 @@ int svcmgr_handler(struct binder_state *bs,
         if (!handle)
             break;
         //保存查询结果，以返回给客户端
-        bio_put_ref(reply, handle);
+        bio_put_ref(reply, handle); //放入reply中
         return 0;
 
     case SVC_MGR_ADD_SERVICE:  //用于注册一个Binder Server

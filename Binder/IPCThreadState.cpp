@@ -53,7 +53,7 @@ int IPCThreadState::waitForResponse(Parcel *reply, int *acquireResult){
         if (mIn.dataAvail() == 0) continue;  //mIn中没有数据，继续循环
         
         //读取回复数据
-        cmd = (uint32_t)mIn.readInt32(); //读取cmd
+        cmd = (uint32_t)mIn.readInt32(); //读取cmd  所以dataPos 会右移变大 这里会影响talkWithDriver的读写申请
         
         IF_LOG_COMMANDS() {
             alog << "Processing waitForResponse Command: "
@@ -228,8 +228,9 @@ int IPCThreadState::talkWithDriver(bool doReceive){
     binder_write_read bwr;
     
     // Is the read buffer empty?
-    //当前已经处理过的数据量 >= Parcel中已经有的数据量  对mIn来说 读取数据是处理
-    const bool needRead = mIn.dataPosition() >= mIn.dataSize();
+    //当前已经处理过的数据量（上层） >= Parcel中已经有的数据量  对mIn来说 读取数据是处理（上层 使用mIn.readXX）
+    const bool needRead = mIn.dataPosition() >= mIn.dataSize();  //这里的理解是这样的：需要发送请求去让Binder驱动读取数据，才会设置read_size>0
+    //你可以这么理解，上层 mIn.readXXA 读取数据（处理），Parcel中的数据量 dataPos 就增加   如果dataPos < dataSize 说明有数据需要上层继续读取（处理，还有数据没处理完，所以Binder不需要再申请数据） 这里needRead就是false（Binder你不要继续去请求数据，先把数据处理完） 那就一定不会设置read_size 
     
     // We don't want to write anything if we are still reading
     // from data left in the input buffer and the caller
@@ -237,8 +238,11 @@ int IPCThreadState::talkWithDriver(bool doReceive){
     //doRecevice 调用者希望读取
     //doReceive 传的是true 说明调用才希望读取 
     //但是这个逻辑outAvail = 0 的情况是，有一个为真就为真  都为假为假，也就是
-    //1.用户希望读取数据  2.mIn需要去读取数据
-    const size_t outAvail = (!doReceive || needRead) ? mOut.dataSize() : 0;
+    //
+
+    //1.用户不想接收数据 或者 2 需要Binder去请求数据  mOut才有值，因为要Binder驱动向Binder Server写入请求
+    //！！！这里都是用户想接收数据，所以第一个条件一定是false  是不是Binder驱动写入数据 就看第二个  也就是当前上层读取的数据是不是已经读取干净了，需要Binder驱动继续申请数据，需要就设置write_size 但也要看mOut上层给没给东西，没有指令就没有给Binder的命令
+    const size_t outAvail = (!doReceive || needRead) ? mOut.dataSize() : 0;  //这句话理解起来就是，用户想要去接收数据doReceive 但是不需要Binder去请求数据（没有处理完所有的数据）write_size就是0 驱动不发生读取事件
     //什么情况outAvail = mOut.dataSize() 1.用户不希望读取数据 或者 已经读取的数据量 >= Parcel中已经有的数据量 
 
     bwr.write_size = outAvail;
@@ -246,10 +250,10 @@ int IPCThreadState::talkWithDriver(bool doReceive){
     bwr.write_buffer = (uintptr_t)mOut.data();
 
     // This is what we'll read.   
-    if (doReceive && needRead) { //用户希望读取，同时mIn也需要去读取，这里设置read_size
+    if (doReceive && needRead) { //用户希望读取，同时mIn中也有数据需要去处理，这里设置read_size
         bwr.read_size = mIn.dataCapacity();  //进行填写需要read的数据请求
         bwr.read_buffer = (uintptr_t)mIn.data();
-    } else {  //要不就
+    } else {  //
         bwr.read_size = 0;
         bwr.read_buffer = 0;
     }
@@ -329,4 +333,223 @@ int IPCThreadState::talkWithDriver(bool doReceive){
     }
     
     return err;
+}
+
+
+
+int IPCThreadState::executeCommand(int cmd)
+{
+    BBinder* obj;
+    RefBase::weakref_type* refs;
+    int result = NO_ERROR;
+    
+    switch ((uint32_t)cmd) {
+    case BR_ERROR:
+        result = mIn.readInt32();
+        break;
+        
+    case BR_OK:
+        break;
+        
+    case BR_ACQUIRE:
+        refs = (RefBase::weakref_type*)mIn.readPointer();
+        obj = (BBinder*)mIn.readPointer();
+        ALOG_ASSERT(refs->refBase() == obj,
+                   "BR_ACQUIRE: object %p does not match cookie %p (expected %p)",
+                   refs, obj, refs->refBase());
+        obj->incStrong(mProcess.get());
+        IF_LOG_REMOTEREFS() {
+            LOG_REMOTEREFS("BR_ACQUIRE from driver on %p", obj);
+            obj->printRefs();
+        }
+        mOut.writeInt32(BC_ACQUIRE_DONE);
+        mOut.writePointer((uintptr_t)refs);
+        mOut.writePointer((uintptr_t)obj);
+        break;
+        
+    case BR_RELEASE:
+        refs = (RefBase::weakref_type*)mIn.readPointer();
+        obj = (BBinder*)mIn.readPointer();
+        ALOG_ASSERT(refs->refBase() == obj,
+                   "BR_RELEASE: object %p does not match cookie %p (expected %p)",
+                   refs, obj, refs->refBase());
+        IF_LOG_REMOTEREFS() {
+            LOG_REMOTEREFS("BR_RELEASE from driver on %p", obj);
+            obj->printRefs();
+        }
+        mPendingStrongDerefs.push(obj);
+        break;
+        
+    case BR_INCREFS:
+        refs = (RefBase::weakref_type*)mIn.readPointer();
+        obj = (BBinder*)mIn.readPointer();
+        refs->incWeak(mProcess.get());
+        mOut.writeInt32(BC_INCREFS_DONE);
+        mOut.writePointer((uintptr_t)refs);
+        mOut.writePointer((uintptr_t)obj);
+        break;
+        
+    case BR_DECREFS:
+        refs = (RefBase::weakref_type*)mIn.readPointer();
+        obj = (BBinder*)mIn.readPointer();
+        // NOTE: This assertion is not valid, because the object may no
+        // longer exist (thus the (BBinder*)cast above resulting in a different
+        // memory address).
+        //ALOG_ASSERT(refs->refBase() == obj,
+        //           "BR_DECREFS: object %p does not match cookie %p (expected %p)",
+        //           refs, obj, refs->refBase());
+        mPendingWeakDerefs.push(refs);
+        break;
+        
+    case BR_ATTEMPT_ACQUIRE:
+        refs = (RefBase::weakref_type*)mIn.readPointer();
+        obj = (BBinder*)mIn.readPointer();
+         
+        {
+            const bool success = refs->attemptIncStrong(mProcess.get());
+            ALOG_ASSERT(success && refs->refBase() == obj,
+                       "BR_ATTEMPT_ACQUIRE: object %p does not match cookie %p (expected %p)",
+                       refs, obj, refs->refBase());
+            
+            mOut.writeInt32(BC_ACQUIRE_RESULT);
+            mOut.writeInt32((int32_t)success);
+        }
+        break;
+    
+    case BR_TRANSACTION:
+        {
+            binder_transaction_data tr;
+            result = mIn.read(&tr, sizeof(tr));
+            ALOG_ASSERT(result == NO_ERROR,
+                "Not enough command data for brTRANSACTION");
+            if (result != NO_ERROR) break;
+            
+            Parcel buffer;
+            buffer.ipcSetDataReference(
+                reinterpret_cast<const uint8_t*>(tr.data.ptr.buffer),
+                tr.data_size,
+                reinterpret_cast<const binder_size_t*>(tr.data.ptr.offsets),
+                tr.offsets_size/sizeof(binder_size_t), freeBuffer, this);
+            
+            const pid_t origPid = mCallingPid;
+            const uid_t origUid = mCallingUid;
+            const int32_t origStrictModePolicy = mStrictModePolicy;
+            const int32_t origTransactionBinderFlags = mLastTransactionBinderFlags;
+
+            mCallingPid = tr.sender_pid;
+            mCallingUid = tr.sender_euid;
+            mLastTransactionBinderFlags = tr.flags;
+
+            int curPrio = getpriority(PRIO_PROCESS, mMyThreadId);
+            if (gDisableBackgroundScheduling) {
+                if (curPrio > ANDROID_PRIORITY_NORMAL) {
+                    // We have inherited a reduced priority from the caller, but do not
+                    // want to run in that state in this process.  The driver set our
+                    // priority already (though not our scheduling class), so bounce
+                    // it back to the default before invoking the transaction.
+                    setpriority(PRIO_PROCESS, mMyThreadId, ANDROID_PRIORITY_NORMAL);
+                }
+            } else {
+                if (curPrio >= ANDROID_PRIORITY_BACKGROUND) {
+                    // We want to use the inherited priority from the caller.
+                    // Ensure this thread is in the background scheduling class,
+                    // since the driver won't modify scheduling classes for us.
+                    // The scheduling group is reset to default by the caller
+                    // once this method returns after the transaction is complete.
+                    set_sched_policy(mMyThreadId, SP_BACKGROUND);
+                }
+            }
+
+            //ALOGI(">>>> TRANSACT from pid %d uid %d\n", mCallingPid, mCallingUid);
+
+            Parcel reply;
+            status_t error;
+            IF_LOG_TRANSACTIONS() {
+                TextOutput::Bundle _b(alog);
+                alog << "BR_TRANSACTION thr " << (void*)pthread_self()
+                    << " / obj " << tr.target.ptr << " / code "
+                    << TypeCode(tr.code) << ": " << indent << buffer
+                    << dedent << endl
+                    << "Data addr = "
+                    << reinterpret_cast<const uint8_t*>(tr.data.ptr.buffer)
+                    << ", offsets addr="
+                    << reinterpret_cast<const size_t*>(tr.data.ptr.offsets) << endl;
+            }
+            if (tr.target.ptr) {
+                // We only have a weak reference on the target object, so we must first try to
+                // safely acquire a strong reference before doing anything else with it.
+                if (reinterpret_cast<RefBase::weakref_type*>(
+                        tr.target.ptr)->attemptIncStrong(this)) {
+                    error = reinterpret_cast<BBinder*>(tr.cookie)->transact(tr.code, buffer,
+                            &reply, tr.flags);
+                    reinterpret_cast<BBinder*>(tr.cookie)->decStrong(this);
+                } else {
+                    error = UNKNOWN_TRANSACTION;
+                }
+
+            } else {
+                error = the_context_object->transact(tr.code, buffer, &reply, tr.flags);
+            }
+
+            //ALOGI("<<<< TRANSACT from pid %d restore pid %d uid %d\n",
+            //     mCallingPid, origPid, origUid);
+            
+            if ((tr.flags & TF_ONE_WAY) == 0) {
+                LOG_ONEWAY("Sending reply to %d!", mCallingPid);
+                if (error < NO_ERROR) reply.setError(error);
+                sendReply(reply, 0);
+            } else {
+                LOG_ONEWAY("NOT sending reply to %d!", mCallingPid);
+            }
+            
+            mCallingPid = origPid;
+            mCallingUid = origUid;
+            mStrictModePolicy = origStrictModePolicy;
+            mLastTransactionBinderFlags = origTransactionBinderFlags;
+
+            IF_LOG_TRANSACTIONS() {
+                TextOutput::Bundle _b(alog);
+                alog << "BC_REPLY thr " << (void*)pthread_self() << " / obj "
+                    << tr.target.ptr << ": " << indent << reply << dedent << endl;
+            }
+            
+        }
+        break;
+    
+    case BR_DEAD_BINDER:
+        {
+            BpBinder *proxy = (BpBinder*)mIn.readPointer();
+            proxy->sendObituary();
+            mOut.writeInt32(BC_DEAD_BINDER_DONE);
+            mOut.writePointer((uintptr_t)proxy);
+        } break;
+        
+    case BR_CLEAR_DEATH_NOTIFICATION_DONE:
+        {
+            BpBinder *proxy = (BpBinder*)mIn.readPointer();
+            proxy->getWeakRefs()->decWeak(proxy);
+        } break;
+        
+    case BR_FINISHED:
+        result = TIMED_OUT;
+        break;
+        
+    case BR_NOOP: //啥也没做
+        break;
+        
+    case BR_SPAWN_LOOPER:
+        mProcess->spawnPooledThread(false);
+        break;
+        
+    default:
+        printf("*** BAD COMMAND %d received from Binder driver\n", cmd);
+        result = UNKNOWN_ERROR;
+        break;
+    }
+
+    if (result != NO_ERROR) {
+        mLastError = result;
+    }
+    
+    return result;
 }

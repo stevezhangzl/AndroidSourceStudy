@@ -489,8 +489,8 @@ static int binder_thread_read(struct binder_proc *proc,struct binder_thread *thr
 	}
 
 retry:
-	wait_for_proc_work = thread->transaction_stack == NULL &&
-				list_empty(&thread->todo);
+	//是否要等待  因为 transaction_stack 不为空， 调用者前一次已经处理了todo队列，所以调用者现在唯一能做的就是等待ServiceManager的结果
+	wait_for_proc_work = thread->transaction_stack == NULL && list_empty(&thread->todo);
 
 	if (thread->return_error != BR_OK && ptr < end) {
 		if (thread->return_error2 != BR_OK) {
@@ -525,21 +525,20 @@ retry:
 					BINDER_LOOPER_STATE_ENTERED))) {
 			binder_user_error("%d:%d ERROR: Thread waiting for process work before calling BC_REGISTER_LOOPER or BC_ENTER_LOOPER (state %x)\n",
 				proc->pid, thread->pid, thread->looper);
-			wait_event_interruptible(binder_user_error_wait,
-						 binder_stop_on_user_error < 2);
+			wait_event_interruptible(binder_user_error_wait,binder_stop_on_user_error < 2);
 		}
 		binder_set_nice(proc->default_priority);
 		if (non_block) {
 			if (!binder_has_proc_work(proc, thread))
 				ret = -EAGAIN;
 		} else
-			ret = wait_event_interruptible_exclusive(proc->wait, binder_has_proc_work(proc, thread));
-	} else {
-		if (non_block) {
+			ret = wait_event_interruptible_exclusive(proc->wait, binder_has_proc_work(proc, thread));//之前SM的服务 通过ioctl 进到这里 在这里等待别人唤醒
+	} else { //这里会进入等待并唤醒SM
+		if (non_block) { //false
 			if (!binder_has_thread_work(thread))
 				ret = -EAGAIN;
 		} else
-			ret = wait_event_interruptible(thread->wait, binder_has_thread_work(thread));
+			ret = wait_event_interruptible(thread->wait, binder_has_thread_work(thread)); //进入等待，直到ServiceManager来唤醒  这里是最终的等待了
 	}
 
 	binder_lock(__func__);
@@ -555,11 +554,12 @@ retry:
 		uint32_t cmd;
 		struct binder_transaction_data tr;
 		struct binder_work *w;
+		//这一次的binder transaction 事务类型
 		struct binder_transaction *t = NULL;
 
 		if (!list_empty(&thread->todo))
 			w = list_first_entry(&thread->todo, struct binder_work, entry); //之前在binder_thread_write中，把一个binder_work添加到todo中了  所以这里w不会为空
-		else if (!list_empty(&proc->todo) && wait_for_proc_work)
+		else if (!list_empty(&proc->todo) && wait_for_proc_work)//SM被唤醒后 todo队列 是否有需要处理的事项  拿到之前的 BINDER_WORK_TRANSACTION
 			w = list_first_entry(&proc->todo, struct binder_work, entry);
 		else {
 			if (ptr - buffer == 4 && !(thread->looper & BINDER_LOOPER_STATE_NEED_RETURN)) /* no data added */
@@ -721,16 +721,14 @@ retry:
 
 		tr.data_size = t->buffer->data_size;
 		tr.offsets_size = t->buffer->offsets_size;
-		tr.data.ptr.buffer = (void *)t->buffer->data +
-					proc->user_buffer_offset;
-		tr.data.ptr.offsets = tr.data.ptr.buffer +
-					ALIGN(t->buffer->data_size,
-					    sizeof(void *));
+		tr.data.ptr.buffer = (void *)t->buffer->data + proc->user_buffer_offset;
+		tr.data.ptr.offsets = tr.data.ptr.buffer + ALIGN(t->buffer->data_size,sizeof(void *));
 
+		//SM进程，把BR_TRANSACTION 写入命令
 		if (put_user(cmd, (uint32_t __user *)ptr))
 			return -EFAULT;
-		ptr += sizeof(uint32_t);
-		if (copy_to_user(ptr, &tr, sizeof(tr)))
+		ptr += sizeof(uint32_t); //移动指针
+		if (copy_to_user(ptr, &tr, sizeof(tr)))  //拷贝数据  拷贝的就是Binder Client向Binder驱动中写入的数据  mOut
 			return -EFAULT;
 		ptr += sizeof(tr);
 

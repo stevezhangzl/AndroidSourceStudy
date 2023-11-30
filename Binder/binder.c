@@ -118,7 +118,7 @@ int binder_parse(struct binder_state *bs, struct binder_io *bio,
             if (func) { //这个函数是svcmgr_handler()
                 unsigned rdata[256/4];
                 struct binder_io msg;
-                struct binder_io reply;
+                struct binder_io reply; //这里是binder_io结构体 binder_io是SM内部用于存储binder object的结构体
                 int res;
 
                 bio_init(&reply, rdata, sizeof(rdata), 4);
@@ -195,7 +195,8 @@ void binder_loop(struct binder_state *bs, binder_handler func)
         bwr.read_buffer = (uintptr_t) readbuf; //读取的消息存储到readbuf
 
         //1.读取“消息”  这个是从Binder驱动那里获得的
-        res = ioctl(bs->fd, BINDER_WRITE_READ, &bwr);
+        res = ioctl(bs->fd, BINDER_WRITE_READ, &bwr); //向Binder驱动读写消息
+        //这里也会执行Binder驱动的binder_thread_read
 
 
         //2.如果是 退出命令   马上结束循环
@@ -206,7 +207,7 @@ void binder_loop(struct binder_state *bs, binder_handler func)
 
         //3.如果消息为为空就继续循环，如果消息不为空，就进行处理 永远循环不会退出，要不就出现致命的错误了
         //3.处理这条消息，直到从驱动读取的消息都已处理完成，然后循环继续向Binder Driver发送 BINDER_WRITE_READ 以查询有没有新的消息
-        res = binder_parse(bs, 0, (uintptr_t) readbuf, bwr.read_consumed, func);
+        res = binder_parse(bs, 0, (uintptr_t) readbuf, bwr.read_consumed, func); //解析 
         if (res == 0) {
             ALOGE("binder_loop: unexpected reply?!\n");
             break;

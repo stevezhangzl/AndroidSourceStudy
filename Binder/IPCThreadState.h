@@ -10,6 +10,8 @@ class IPCThreadState{
     int waitForResponse(Parcel *reply, int *acquireResult);
     int talkWithDriver(bool doReceive=true);
 
+    int executeCommand(int cmd);
+
   private:
     IPCThreadState();
     ~IPCThreadState();
