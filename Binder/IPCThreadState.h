@@ -11,6 +11,7 @@ class IPCThreadState{
     int talkWithDriver(bool doReceive=true);
 
     int executeCommand(int cmd);
+    int writeTransactionData(int cmd, int binderFlags,int handle, int code, const Parcel& data, int* statusBuffer);
 
   private:
     IPCThreadState();

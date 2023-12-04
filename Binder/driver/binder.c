@@ -43,9 +43,9 @@ static void binder_transaction(struct binder_proc *proc,struct binder_thread *th
 	struct binder_transaction *t;
 	//表示一个未完成的操作，因为一个transaction涉及两个进程A和B，当A向B发送了请求后，
 	//B需要一段时间来执行；此时对于A来说就一个“未完成的操作”——直到B返回结果后，Binder驱动才会再次启动A来继续执行
-	struct binder_work *tcomplete;
+	struct binder_work *tcomplete; //调用进程  表示未完成的操作
 	size_t *offp, *off_end;
-	//目标对象所在的进程  这getService这里是ServiceManager  重点之一
+	//目标对象所在的进程  这getService这里是ServiceManager  怎么获取target_proc是重点之一
 	struct binder_proc *target_proc;
 	//目标对象所在的线程
 	struct binder_thread *target_thread = NULL;
@@ -109,7 +109,7 @@ static void binder_transaction(struct binder_proc *proc,struct binder_thread *th
 		if (tr->target.handle) { //目标进程handle不为0 是其他服务
 			//第一步、获取target_node
 			struct binder_ref *ref;
-			ref = binder_get_ref(proc, tr->target.handle);
+			ref = binder_get_ref(proc, tr->target.handle); //通过binder_get_ref来查找是否存在一个符合handle要求的node
 			if (ref == NULL) {
 				binder_user_error("%d:%d got transaction to invalid handle\n",
 					proc->pid, thread->pid);
@@ -118,7 +118,7 @@ static void binder_transaction(struct binder_proc *proc,struct binder_thread *th
 			}
 			target_node = ref->node;
 		} else { //handle为0 即就是ServiceManager
-			target_node = binder_context_mgr_node;
+			target_node = binder_context_mgr_node;  //可以直接用这个全局变量来获取target_node
 			if (target_node == NULL) {
 				return_error = BR_DEAD_REPLY;
 				goto err_no_context_mgr_node;
@@ -126,7 +126,7 @@ static void binder_transaction(struct binder_proc *proc,struct binder_thread *th
 		}
 		e->to_node = target_node->debug_id;
 		//第二步、找出目标对象的target_proc 和target_thread
-		target_proc = target_node->proc;  //target_proc
+		target_proc = target_node->proc;  //1.target_proc
 		if (target_proc == NULL) {
 			return_error = BR_DEAD_REPLY;
 			goto err_dead_binder;
@@ -145,7 +145,7 @@ static void binder_transaction(struct binder_proc *proc,struct binder_thread *th
 			}
 			while (tmp) {
 				if (tmp->from && tmp->from->proc == target_proc)
-					target_thread = tmp->from; //target_thread
+					target_thread = tmp->from; //2.target_thread
 				tmp = tmp->from_parent;
 			}
 		}
@@ -153,8 +153,8 @@ static void binder_transaction(struct binder_proc *proc,struct binder_thread *th
 	//第三步、得到target_list 和target_wait
 	if (target_thread) {
 		e->to_thread = target_thread->pid;
-		target_list = &target_thread->todo; //todo
-		target_wait = &target_thread->wait; //wait
+		target_list = &target_thread->todo; //3.从目标线程中得到 todo 列表
+		target_wait = &target_thread->wait; //wait 列表
 	} else {
 		target_list = &target_proc->todo;
 		target_wait = &target_proc->wait;
@@ -162,16 +162,15 @@ static void binder_transaction(struct binder_proc *proc,struct binder_thread *th
 	e->to_proc = target_proc->pid;
 
 	/* TODO: reuse incoming transaction for reply */
-	//第四步、生成一个binder_transaction变量，即上面的t 用于描述本次要进行的transaction  最后面，会加入todo中， 这样当目标对象被唤醒时，就可以从这个队列中取出需要做的工作
-	t = kzalloc(sizeof(*t), GFP_KERNEL);
+	//第四步、生成一个 binder_transaction ，即上面的t 用于描述本次要进行的transaction  最后面，会加入目录进程的todo中， 这样当目标对象被唤醒时，就可以从这个队列中取出需要做的工作
+	t = kzalloc(sizeof(*t), GFP_KERNEL); //后面会加入todo
 	if (t == NULL) {
 		return_error = BR_FAILED_REPLY;
 		goto err_alloc_t_failed;
 	}
 	binder_stats_created(BINDER_STAT_TRANSACTION);
 	//第五步、生成一个binder_work变量 用于说明当前调用才线程有一个未完成的transactioin  最后面，会添加到本线程的todo队列中
-	tcomplete = kzalloc(sizeof(*tcomplete), GFP_KERNEL);
-	if (tcomplete == NULL) {
+	tcomplete = kzalloc(sizeof(*tcomplete), GFP_KERNEL); //是一个binder_work  
 		return_error = BR_FAILED_REPLY;
 		goto err_alloc_tcomplete_failed;
 	}
@@ -195,7 +194,7 @@ static void binder_transaction(struct binder_proc *proc,struct binder_thread *th
 			     tr->data.ptr.buffer, tr->data.ptr.offsets,
 			     tr->data_size, tr->offsets_size);
 
-	//第六步、填写binder_transaction数据
+	//第六步、填写binder_transaction数据  上面光malloc了
 	if (!reply && !(tr->flags & TF_ONE_WAY))
 		t->from = thread; //调用者信息  表示这个transaction是由谁发起的
 	else
@@ -210,8 +209,8 @@ static void binder_transaction(struct binder_proc *proc,struct binder_thread *th
 	t->priority = task_nice(current);
 
 	trace_binder_transaction(reply, t, target_node);
-	//buffer是为了完成本条transcation所申请的内存，也就是Binder驱动mmap所管理的内存区域
-	//这里是目标进程的buffer  也就是进程B
+	//buffer是为了完成本条transcation所申请的内存，也就是Binder驱动mmap所管理的内存区域  这里的buffer很关键  这里是申请buffer内存
+	//这里的buffer所指向的内存空和目标对象共享的
 	t->buffer = binder_alloc_buf(target_proc, tr->data_size,tr->offsets_size, !reply && (t->flags & TF_ONE_WAY));
 	if (t->buffer == NULL) {
 		return_error = BR_FAILED_REPLY;
@@ -235,7 +234,7 @@ static void binder_transaction(struct binder_proc *proc,struct binder_thread *th
 		// to from  n  这里是从tr 也就是目标进程的 也就是ServiceManageR
 		//t->buffer是目标进程驱动mmap的内存区域  这里tr是调用者所在的内存区域  从调用者所在进程copy到自己内核的t->buffer(这里和目标进程内核区域是一个区)
 		//因为t->buffer所指向的内存空间和目标对象是共享的，所以就等于把调用者的内存copy到了目标对象的内存区域
-	if (copy_from_user(t->buffer->data, tr->data.ptr.buffer, tr->data_size)) {
+	if (copy_from_user(t->buffer->data, tr->data.ptr.buffer, tr->data_size)) {  //把tr拷贝到 驱动binder的mmap的内存区域  这样就把Binder Clinent拷贝到Binder Server
 		binder_user_error("%d:%d got transaction with invalid data ptr\n",
 				proc->pid, thread->pid);
 		return_error = BR_FAILED_REPLY;
@@ -470,7 +469,7 @@ err_no_context_mgr_node:
 
 
 
-//和binder_thread_write类似
+//和 binder_thread_write 类似
 //总的来说 读取了两个命令 BR_NOOP和BR_TRANSACTION_COMPLETE  完成后仍旧回到binder_ioctl  继而返回talkWithDriver
 static int binder_thread_read(struct binder_proc *proc,struct binder_thread *thread,void  __user *buffer, int size,signed long *consumed, int non_block)
 {
@@ -521,24 +520,21 @@ retry:
 				   !!thread->transaction_stack,
 				   !list_empty(&thread->todo));
 	if (wait_for_proc_work) {
-		if (!(thread->looper & (BINDER_LOOPER_STATE_REGISTERED |
-					BINDER_LOOPER_STATE_ENTERED))) {
-			binder_user_error("%d:%d ERROR: Thread waiting for process work before calling BC_REGISTER_LOOPER or BC_ENTER_LOOPER (state %x)\n",
-				proc->pid, thread->pid, thread->looper);
-			wait_event_interruptible(binder_user_error_wait,binder_stop_on_user_error < 2);
+		if (!(thread->looper & (BINDER_LOOPER_STATE_REGISTERED | BINDER_LOOPER_STATE_ENTERED))) {
+			binder_user_error("%d:%d ERROR: Thread waiting for process work before calling BC_REGISTER_LOOPER or BC_ENTER_LOOPER (state %x)\n",proc->pid, thread->pid, thread->looper);wait_event_interruptible(binder_user_error_wait,binder_stop_on_user_error < 2);
 		}
 		binder_set_nice(proc->default_priority);
 		if (non_block) {
 			if (!binder_has_proc_work(proc, thread))
 				ret = -EAGAIN;
 		} else
-			ret = wait_event_interruptible_exclusive(proc->wait, binder_has_proc_work(proc, thread));//之前SM的服务 通过ioctl 进到这里 在这里等待别人唤醒
+			ret = wait_event_interruptible_exclusive(proc->wait, binder_has_proc_work(proc, thread));//之前SM的服务 通过ioctl 进到这里 在这里等待别人唤醒  这里的唤醒是binder_thread_write里的
 	} else { //这里会进入等待并唤醒SM
 		if (non_block) { //false
 			if (!binder_has_thread_work(thread))
 				ret = -EAGAIN;
 		} else
-			ret = wait_event_interruptible(thread->wait, binder_has_thread_work(thread)); //进入等待，直到ServiceManager来唤醒  这里是最终的等待了
+			ret = wait_event_interruptible(thread->wait, binder_has_thread_work(thread)); //进入等待，直到ServiceManager来唤醒  这里是最终的等待了   这里调用者线程才真正的挂起了
 	}
 
 	binder_lock(__func__);
@@ -557,9 +553,9 @@ retry:
 		//这一次的binder transaction 事务类型
 		struct binder_transaction *t = NULL;
 
-		if (!list_empty(&thread->todo))
-			w = list_first_entry(&thread->todo, struct binder_work, entry); //之前在binder_thread_write中，把一个binder_work添加到todo中了  所以这里w不会为空
-		else if (!list_empty(&proc->todo) && wait_for_proc_work)//SM被唤醒后 todo队列 是否有需要处理的事项  拿到之前的 BINDER_WORK_TRANSACTION
+		if (!list_empty(&thread->todo))   //之前在binder_thread_write中，把一个binder_work添加到todo中了  所以这里w不会为空
+			w = list_first_entry(&thread->todo, struct binder_work, entry);
+		else if (!list_empty(&proc->todo) && wait_for_proc_work)//SM被唤醒后 todo队列 是否有需要处理的事项  拿到之前的 BINDER_WORK_TRANSACTION  这里的binder_thread_read是SM进程调用的，所以proc是SM的进程
 			w = list_first_entry(&proc->todo, struct binder_work, entry);
 		else {
 			if (ptr - buffer == 4 && !(thread->looper & BINDER_LOOPER_STATE_NEED_RETURN)) /* no data added */
@@ -572,7 +568,7 @@ retry:
 
 		switch (w->type) {
 		case BINDER_WORK_TRANSACTION: {
-			t = container_of(w, struct binder_transaction, work);
+			t = container_of(w, struct binder_transaction, work); //从从binder_work中取到t
 		} break;
 		case BINDER_WORK_TRANSACTION_COMPLETE: { //是这个类型
 			cmd = BR_TRANSACTION_COMPLETE; //这里又写入一个BR_TRANSCATION_COMPLETE 
@@ -780,14 +776,14 @@ done:
 
 
 /**
- * proc:调用者进程  也就是A
- * thread:调用者线程    也就是A
+ * proc:调用者进程  也就是Binder Client
+ * thread:调用者线程    也就是Binder Client
  * buffer:bwr.write_buffer  在talkWithDriver中被设置为mOut.data()  这里的buffer是用户进程
  * 	这里是IPCThreadState的writeTransactionData中对mOut写入的数据
- * 	mOut.writeInt32(cmd);   -> cmd 是 BC_TRANSCATION
- * 	mOut.write(&tr,sizeof(tr)); tr -> binder_transcation_data 数据结构变量
+ * 	mOut.writeInt32(cmd);   -> cmd 是 BC_TRANSCATION     1.要执行的命令
+ * 	mOut.write(&tr,sizeof(tr)); tr -> binder_transcation_data 数据结构变量  2.相关的binder_transact_data数据
  * size:bwr.write_size
- * consumed:bwr.write_soncsumed
+ * consumed:bwr.write_soncsumed  传入的是指针
  * 
 */
 int binder_thread_write(struct binder_proc *proc, struct binder_thread *thread,void __user *buffer, int size, signed long *consumed)
@@ -802,7 +798,7 @@ int binder_thread_write(struct binder_proc *proc, struct binder_thread *thread,v
 	while (ptr < end && thread->return_error == BR_OK) {
 		if (get_user(cmd, (uint32_t __user *)ptr)) //获取一个cmd
 			return -EFAULT;
-		ptr += sizeof(uint32_t); //跳过cmd所占的的空间大小  技巧
+		ptr += sizeof(uint32_t); //跳过cmd所占的的空间大小  指针处理技巧
 		trace_binder_command(cmd); 
 		if (_IOC_NR(cmd) < ARRAY_SIZE(binder_stats.bc)) { //统计数据
 			binder_stats.bc[_IOC_NR(cmd)]++;
@@ -972,9 +968,9 @@ int binder_thread_write(struct binder_proc *proc, struct binder_thread *thread,v
 			struct binder_transaction_data tr;
 
 			//从用户空间取得tr结构  这里是把ptr 拷贝到内核的tr  也就是tr是在内核区
-			if (copy_from_user(&tr, ptr, sizeof(tr)))
+			if (copy_from_user(&tr, ptr, sizeof(tr))) // to from n  从ptr拷贝到tr  这里拷贝的是mOut.data()  也就是 binder_transaction_data 放入到mOut里
 				return -EFAULT;
-			ptr += sizeof(tr); //跳过tr的空间
+			ptr += sizeof(tr); //跳过tr的空间  这里从ptr
 			binder_transaction(proc, thread, &tr, cmd == BC_REPLY); //具体执行命令，把从用户空间获取的tr传入
 			break;
 		}
@@ -1373,12 +1369,12 @@ static long binder_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	struct binder_proc *proc = filp->private_data;
 	struct binder_thread *thread;
 	unsigned int size = _IOC_SIZE(cmd);
-	void __user *ubuf = (void __user *)arg;
+	void __user *ubuf = (void __user *)arg;   //这里是用户态传入的用户进程的数据bwr的指针 
 
 	/*pr_info("binder_ioctl: %d:%d %x %lx\n", proc->pid, current->pid, cmd, arg);*/
 
 	trace_binder_ioctl(cmd, arg); //在保护区进行
-	//让调用者进程暂时挂起，直到目标进程返回结果后，Binder再唤醒等待进程
+	//让调用者进程暂时挂起，继续往下执行，直到目标进程返回结果后，Binder再唤醒等待进程 
 	ret = wait_event_interruptible(binder_user_error_wait, binder_stop_on_user_error < 2);
 	if (ret)
 		goto err_unlocked;
@@ -1403,7 +1399,7 @@ static long binder_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
 		//通过copy_from_user  把Binder Server（比如ServiceManager）的应用进程copy到binder的proc->buff
 		//经过copy_from_user后 一次复制，当前应用进程，可以操作Binder Server所在的内存区域
-		if (copy_from_user(&bwr, ubuf, sizeof(bwr))) {
+		if (copy_from_user(&bwr, ubuf, sizeof(bwr))) { //从用户进程的指针  拷贝到驱动里的地址  这样bwr就有值了
 			ret = -EFAULT;
 			goto err;
 		}
@@ -1415,11 +1411,11 @@ static long binder_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		//我们在talkWithDriver中，根据实际情况分别填写了write和read请求
 		//成功从用户空间取得数据后，接下来就开始执行write/read操作
 		if (bwr.write_size > 0) {//有数据需要写 这里是写给SM所在进程？？？
-			ret = binder_thread_write(proc, thread, (void __user *)bwr.write_buffer, bwr.write_size, &bwr.write_consumed);
+			ret = binder_thread_write(proc, thread, (void __user *)bwr.write_buffer, bwr.write_size, &bwr.write_consumed);  
 			trace_binder_write_done(ret);
 			if (ret < 0) { //成功返回0 <0 表示有错误发生
-				bwr.read_consumed = 0; //告诉调用者已读取的数据大小为0
-				if (copy_to_user(ubuf, &bwr, sizeof(bwr))) //复制数据到用户空间
+				bwr.read_consumed = 0; //告诉调用者已读取的数据大小为0  因为这里出错了，所以没有从SM进程读取到数据
+				if (copy_to_user(ubuf, &bwr, sizeof(bwr))) //复制数据到用户空间   告诉用户进程
 					ret = -EFAULT;
 				goto err;
 			}
@@ -1443,7 +1439,7 @@ static long binder_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			     "%d:%d wrote %ld of %ld, read return %ld of %ld\n",
 			     proc->pid, thread->pid, bwr.write_consumed, bwr.write_size,
 			     bwr.read_consumed, bwr.read_size);
-		if (copy_to_user(ubuf, &bwr, sizeof(bwr))) {
+		if (copy_to_user(ubuf, &bwr, sizeof(bwr))) {  //把结果复制到用户进程
 			ret = -EFAULT;
 			goto err;
 		}

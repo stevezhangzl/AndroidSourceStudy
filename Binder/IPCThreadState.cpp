@@ -1,4 +1,6 @@
 //frameworks/native/libs/binder/IPCThreadState.cpp
+//https://cs.android.com/android/platform/superproject/+/android-7.0.0_r1:frameworks/native/libs/binder/IPCThreadState.cpp?hl=zh-cn
+
 #include "IPCThreadState.h"
 #include <pthread.h>
 
@@ -12,7 +14,8 @@ static pthread_mutex_t gTLSMutex = PTHREAD_MUTEX_INITIALIZER;
 //线程中的单实例 ProcessState是进程中的单实例  线程中的全局变量，在其他线程是无法访问到的，纯粹的全局变量无法满足  需要TLS
 IPCThreadState* IPCThreadState::self(){
 
-  if(gHaveTLS){ //这个变量的初始值为false
+  //通过gHaveTLS变量和判断和 goto 保证了第一次会gTLS 赋值 又不会
+  if(gHaveTLS){ //这个变量的初始值为false  刚开始的时候不走这里
 restart:  //当启用TLSrgk ,重新返回到这
     const pthread_key_t k = gTLS;
     //如果本线程已经创建过IPCThreadState 那么pthread_getspecific就不为空 否则就返回一个新那建的IPCThreadState
@@ -23,9 +26,11 @@ restart:  //当启用TLSrgk ,重新返回到这
 
   if(gShutdown) return NULL;
 
+
+  //第一次一定会走这里
   pthread_mutex_lock(&gTLSMutex);
-  if(!gHaveTLS){
-    if(pthread_key_create(&gTLS,threadDestructor) != 0){
+  if(!gHaveTLS){ //如果不存在TLS 就创建  好像只是为了给gTLS这个key赋值
+    if(pthread_key_create(&gTLS,threadDestructor) != 0){ //启动一个线程，但好像没干什么
       pthread_mutex_unlock(&gTLSMutex);
       return NULL;
     }
@@ -61,66 +66,66 @@ int IPCThreadState::waitForResponse(Parcel *reply, int *acquireResult){
         }
 
         switch (cmd) {
-        case BR_TRANSACTION_COMPLETE: //第二轮，进到这里  这里是同步的，所以会再次调用talkWithDriver与Binder驱动进行交互
-            if (!reply && !acquireResult) goto finish;  //非同步  直接finish
-            break;
-        
-        case BR_DEAD_REPLY:
-            err = DEAD_OBJECT;
-            goto finish;
+            case BR_TRANSACTION_COMPLETE: //第二轮，进到这里  这里是同步的，所以会再次调用talkWithDriver与Binder驱动进行交互
+                if (!reply && !acquireResult) goto finish;  //非同步  直接finish
+                break;
+            
+            case BR_DEAD_REPLY:
+                err = DEAD_OBJECT;
+                goto finish;
 
-        case BR_FAILED_REPLY:
-            err = FAILED_TRANSACTION;
-            goto finish;
-        
-        case BR_ACQUIRE_RESULT:
-            {
-                ALOG_ASSERT(acquireResult != NULL, "Unexpected brACQUIRE_RESULT");
-                const int32_t result = mIn.readInt32();
-                if (!acquireResult) continue;
-                *acquireResult = result ? NO_ERROR : INVALID_OPERATION;
-            }
-            goto finish;
-        
-        case BR_REPLY:
-            {
-                binder_transaction_data tr;
-                err = mIn.read(&tr, sizeof(tr));
-                ALOG_ASSERT(err == NO_ERROR, "Not enough command data for brREPLY");
-                if (err != NO_ERROR) goto finish;
+            case BR_FAILED_REPLY:
+                err = FAILED_TRANSACTION;
+                goto finish;
+            
+            case BR_ACQUIRE_RESULT:
+                {
+                    ALOG_ASSERT(acquireResult != NULL, "Unexpected brACQUIRE_RESULT");
+                    const int32_t result = mIn.readInt32();
+                    if (!acquireResult) continue;
+                    *acquireResult = result ? NO_ERROR : INVALID_OPERATION;
+                }
+                goto finish;
+            
+            case BR_REPLY:
+                {
+                    binder_transaction_data tr;
+                    err = mIn.read(&tr, sizeof(tr));
+                    ALOG_ASSERT(err == NO_ERROR, "Not enough command data for brREPLY");
+                    if (err != NO_ERROR) goto finish;
 
-                if (reply) {
-                    if ((tr.flags & TF_STATUS_CODE) == 0) {
-                        reply->ipcSetDataReference(
-                            reinterpret_cast<const uint8_t*>(tr.data.ptr.buffer),
-                            tr.data_size,
-                            reinterpret_cast<const binder_size_t*>(tr.data.ptr.offsets),
-                            tr.offsets_size/sizeof(binder_size_t),
-                            freeBuffer, this);
+                    if (reply) {
+                        if ((tr.flags & TF_STATUS_CODE) == 0) {
+                            reply->ipcSetDataReference(
+                                reinterpret_cast<const uint8_t*>(tr.data.ptr.buffer),
+                                tr.data_size,
+                                reinterpret_cast<const binder_size_t*>(tr.data.ptr.offsets),
+                                tr.offsets_size/sizeof(binder_size_t),
+                                freeBuffer, this);
+                        } else {
+                            err = *reinterpret_cast<const status_t*>(tr.data.ptr.buffer);
+                            freeBuffer(NULL,
+                                reinterpret_cast<const uint8_t*>(tr.data.ptr.buffer),
+                                tr.data_size,
+                                reinterpret_cast<const binder_size_t*>(tr.data.ptr.offsets),
+                                tr.offsets_size/sizeof(binder_size_t), this);
+                        }
                     } else {
-                        err = *reinterpret_cast<const status_t*>(tr.data.ptr.buffer);
                         freeBuffer(NULL,
                             reinterpret_cast<const uint8_t*>(tr.data.ptr.buffer),
                             tr.data_size,
                             reinterpret_cast<const binder_size_t*>(tr.data.ptr.offsets),
                             tr.offsets_size/sizeof(binder_size_t), this);
+                        continue;
                     }
-                } else {
-                    freeBuffer(NULL,
-                        reinterpret_cast<const uint8_t*>(tr.data.ptr.buffer),
-                        tr.data_size,
-                        reinterpret_cast<const binder_size_t*>(tr.data.ptr.offsets),
-                        tr.offsets_size/sizeof(binder_size_t), this);
-                    continue;
                 }
-            }
-            goto finish;
+                goto finish;
 
-        default: //BR_NOOP
-            err = executeCommand(cmd);
-            if (err != NO_ERROR) goto finish;
-            break;
-        }
+            default: //BR_NOOP
+                err = executeCommand(cmd);
+                if (err != NO_ERROR) goto finish;
+                break;
+            }
     }
 
 finish:
@@ -134,7 +139,47 @@ finish:
 }
 
 
+int IPCThreadState::writeTransactionData(int cmd, int binderFlags,int handle, int code, const Parcel& data, int* statusBuffer)
+{
+    //binder__transaction_data 才是Binder驱动认识的数据结构   这里是把数据转成tr 然后放在mOut中
+    binder_transaction_data tr;
 
+    tr.target.ptr = 0; /* Don't pass uninitialized stack data to a remote process */
+    tr.target.handle = handle;
+    tr.code = code;
+    tr.flags = binderFlags;
+    tr.cookie = 0;
+    tr.sender_pid = 0;
+    tr.sender_euid = 0;
+    
+    const status_t err = data.errorCheck();
+    if (err == NO_ERROR) {
+        tr.data_size = data.ipcDataSize();
+        tr.data.ptr.buffer = data.ipcData();
+        tr.offsets_size = data.ipcObjectsCount()*sizeof(binder_size_t);
+        tr.data.ptr.offsets = data.ipcObjects();
+    } else if (statusBuffer) {
+        tr.flags |= TF_STATUS_CODE;
+        *statusBuffer = err;
+        tr.data_size = sizeof(status_t);
+        tr.data.ptr.buffer = reinterpret_cast<uintptr_t>(statusBuffer);
+        tr.offsets_size = 0;
+        tr.data.ptr.offsets = 0;
+    } else {
+        return (mLastError = err);
+    }
+    
+    mOut.writeInt32(cmd);
+    mOut.write(&tr, sizeof(tr));
+    
+    return NO_ERROR;
+}
+
+
+
+/**
+ * 负责与Binder驱动进行 命令 交互
+*/
 int IPCThreadState::transact(int handle,int code,const Parcel& data,Parcel* reply,int flags){
   int err = data.errorCheck();
   //允许回复中包含文件描述符
@@ -144,7 +189,8 @@ int IPCThreadState::transact(int handle,int code,const Parcel& data,Parcel* repl
   if (err == NO_ERROR) {
       LOG_ONEWAY(">>>> SEND from pid %d uid %d %s", getpid(), getuid(),
           (flags & TF_ONE_WAY) == 0 ? "READ REPLY" : "ONE WAY");
-      //只是整理数据，这里并不发送  发给Binder驱动的是mOut
+      //只是整理数据，这里并不发送  发给Binder驱动的是mOut 
+      //这里是把parcel转成  transact data 因为 parcel Binder驱动不认识  其实就是把 flags handle 命令-BC_TRANSACTION 这些填充tr中
       err = writeTransactionData(BC_TRANSACTION, flags, handle, code, data, NULL); //只是整理数据，把结果存入mOut
   }
 
@@ -229,7 +275,7 @@ int IPCThreadState::talkWithDriver(bool doReceive){
     
     // Is the read buffer empty?
     //当前已经处理过的数据量（上层） >= Parcel中已经有的数据量  对mIn来说 读取数据是处理（上层 使用mIn.readXX）
-    const bool needRead = mIn.dataPosition() >= mIn.dataSize();  //这里的理解是这样的：需要发送请求去让Binder驱动读取数据，才会设置read_size>0
+    const bool needRead = mIn.dataPosition() >= mIn.dataSize();  //前提是mIn是需要Binder驱动去读取数据的
     //你可以这么理解，上层 mIn.readXXA 读取数据（处理），Parcel中的数据量 dataPos 就增加   如果dataPos < dataSize 说明有数据需要上层继续读取（处理，还有数据没处理完，所以Binder不需要再申请数据） 这里needRead就是false（Binder你不要继续去请求数据，先把数据处理完） 那就一定不会设置read_size 
     
     // We don't want to write anything if we are still reading
@@ -246,8 +292,8 @@ int IPCThreadState::talkWithDriver(bool doReceive){
     //什么情况outAvail = mOut.dataSize() 1.用户不希望读取数据 或者 已经读取的数据量 >= Parcel中已经有的数据量 
 
     bwr.write_size = outAvail;
-    //Parcel内部数据的内存起始地址
-    bwr.write_buffer = (uintptr_t)mOut.data();
+    //Parcel内部数据的内存起始地址  这里把mOut赋值给bwr数据结构
+    bwr.write_buffer = (uintptr_t)mOut.data();  
 
     // This is what we'll read.   
     if (doReceive && needRead) { //用户希望读取，同时mIn中也有数据需要去处理，这里设置read_size
@@ -313,11 +359,11 @@ int IPCThreadState::talkWithDriver(bool doReceive){
             if (bwr.write_consumed < mOut.dataSize()) //消耗的数据量小于mOut的总数据量  就单独去掉这部分数据
                 mOut.remove(0, bwr.write_consumed);
             else
-                mOut.setDataSize(0); //否则就设置当前总数据量为0
+                mOut.setDataSize(0); //否则就设置当前总数据量为0 意味着没有需要 写入的数据了
         }
         if (bwr.read_consumed > 0) { //Binder驱动已经成功帮我们读取到了数据，并写入了mIn.data()所指向的内存地址
-            mIn.setDataSize(bwr.read_consumed); //设置mDataSize和mDataPos
-            mIn.setDataPosition(0);
+            mIn.setDataSize(bwr.read_consumed); //设置mDataSize      
+            mIn.setDataPosition(0);// mDataPos   
         }
         IF_LOG_COMMANDS() {
             TextOutput::Bundle _b(alog);
