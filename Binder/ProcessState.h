@@ -13,10 +13,17 @@ class ProcessState{
     IBinder& getContextObject(const IBinder& caller);
     IBinder& getStrongProxyForHandle(int handle);
 
+
+    void startThreadPool();
+
   private:
     friend class IPCThreadState;
     ProcessState();
     ~ProcessState();
+
+
+    void spawnPooledThread(bool isMain);
+
 
 
     //全局列表来记录所有与Binder对象相关的信息，每个表项是一个handle_entry 

@@ -53,6 +53,27 @@ IBinder& ProcessState::getContextObject(const IBinder&){
 }
 
 
+void ProcessState::spawnPooledThread(bool isMain)
+{
+    if (mThreadPoolStarted) {
+        String8 name = makeBinderThreadName(); //为线程池取名
+        ALOGV("Spawning new pooled thread, name=%s\n", name.string());
+        Thread t = new PoolThread(isMain); //生成线程对象
+        t->run(name.string()); //运行
+    }
+}
+
+
+
+void ProcessState::startThreadPool()
+{
+    AutoMutex _l(mLock);
+    if (!mThreadPoolStarted) {
+        mThreadPoolStarted = true; //表明已经产生了 避免重复操作
+        spawnPooledThread(true);//产生一个线程池
+    }
+}
+
 
 /**
  * handle 转成Proxy(BpBinder)
