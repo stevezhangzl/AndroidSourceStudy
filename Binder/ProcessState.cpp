@@ -12,6 +12,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include "BpBinder.h"
 
 using namespace android;
 
@@ -51,6 +52,11 @@ IBinder& ProcessState::getContextObject(const IBinder&){
   return getStrongProxyForHandle(0);
 }
 
+
+
+/**
+ * handle 转成Proxy(BpBinder)
+*/
 IBinder& ProcessState::getStrongProxyForHandle(int handle){
   IBinder result; //需要返回的IBinder
 
@@ -67,14 +73,13 @@ IBinder& ProcessState::getStrongProxyForHandle(int handle){
           if (handle == 0) {
 
               Parcel data;
-              int status = IPCThreadState::self()->transact(
-                      0, IBinder::PING_TRANSACTION, data, NULL, 0);
+              int status = IPCThreadState::self()->transact(0, IBinder::PING_TRANSACTION, data, NULL, 0);
               if (status == DEAD_OBJECT)
                   return NULL;
           }
 
           
-          b = new BpBinder(handle);  //BpBinder出现了
+          b = new BpBinder(handle);  //本地没有，就new BpBinder出现了 并设置handle
           e->binder = b;
           if (b) e->refs = b->getWeakRefs();
           result = b;
@@ -128,3 +133,61 @@ ProcessState::ProcessState():mDriverFD(open_driver()){
   LOG_ALWAYS_FATAL_IF(mDriverFD < 0, "Binder driver could not be opened.  Terminating.");
 }
 
+
+
+IBinder ProcessState::getStrongProxyForHandle(int32_t handle)
+{
+    IBinder result;
+
+    AutoMutex _l(mLock);
+
+    handle_entry* e = lookupHandleLocked(handle);
+
+    if (e != NULL) {
+        // We need to create a new BpBinder if there isn't currently one, OR we
+        // are unable to acquire a weak reference on this current one.  See comment
+        // in getWeakProxyForHandle() for more info about this.
+        IBinder* b = e->binder;
+        if (b == NULL || !e->refs->attemptIncWeak(this)) {
+            if (handle == 0) {
+                // Special case for context manager...
+                // The context manager is the only object for which we create
+                // a BpBinder proxy without already holding a reference.
+                // Perform a dummy transaction to ensure the context manager
+                // is registered before we create the first local reference
+                // to it (which will occur when creating the BpBinder).
+                // If a local reference is created for the BpBinder when the
+                // context manager is not present, the driver will fail to
+                // provide a reference to the context manager, but the
+                // driver API does not return status.
+                //
+                // Note that this is not race-free if the context manager
+                // dies while this code runs.
+                //
+                // TODO: add a driver API to wait for context manager, or
+                // stop special casing handle 0 for context manager and add
+                // a driver API to get a handle to the context manager with
+                // proper reference counting.
+
+                Parcel data;
+                status_t status = IPCThreadState::self()->transact(
+                        0, IBinder::PING_TRANSACTION, data, NULL, 0);
+                if (status == DEAD_OBJECT)
+                   return NULL;
+            }
+
+            b = new BpBinder(handle); 
+            e->binder = b;
+            if (b) e->refs = b->getWeakRefs();
+            result = b;
+        } else {
+            // This little bit of nastyness is to allow us to add a primary
+            // reference to the remote proxy when this team doesn't have one
+            // but another team is sending the handle to us.
+            result.force_set(b);
+            e->refs->decWeak(this);
+        }
+    }
+
+    return result;
+}

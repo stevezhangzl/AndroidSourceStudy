@@ -1,5 +1,5 @@
 #include "./binder.c"
-
+#include "binder.h"
 
 //frameworks/native/cmds/servicemanager/service_manager.c
 //https://cs.android.com/android/platform/superproject/+/android-7.0.0_r1:frameworks/native/cmds/servicemanager/service_manager.c?hl=zh-cn
@@ -11,6 +11,7 @@ enum{
     SVC_MGR_ADD_SERVICE,
     SVC_MGR_LIST_SERVICES,
 };
+
 
 
 struct svcinfo
@@ -36,6 +37,8 @@ struct svcinfo *find_svc(const uint16_t *s16, size_t len)
     }
     return NULL;
 }
+
+
 
 uint32_t do_find_service(const uint16_t *s, size_t len, uid_t uid, pid_t spid)
 {
@@ -118,11 +121,11 @@ int svcmgr_handler(struct binder_state *bs,
         }
         //这个函数执行查找操作。SM串维护有一个全局的svclist变量，用于保存所有Server的注册信息
         //整个查找过程没有涉及很复杂的逻辑。
-        handle = do_find_service(s, len, txn->sender_euid, txn->sender_pid);
+        handle = do_find_service(s, len, txn->sender_euid, txn->sender_pid);  //这个handle 就是查出来的  要转化成IBinder的指针 是句柄 如电话号码
         if (!handle)
             break;
         //保存查询结果，以返回给客户端
-        bio_put_ref(reply, handle); //放入reply中
+        bio_put_ref(reply, handle); //结果放入reply中  将这个指针写入reply 即上面的binder_io变量
         return 0;
 
     case SVC_MGR_ADD_SERVICE:  //用于注册一个Binder Server

@@ -18,6 +18,13 @@
     "queue": "c",
     "random": "c",
     "stack": "c",
-    "system_error": "c"
+    "system_error": "c",
+    "__node_handle": "c",
+    "binder.h": "c",
+    "istream": "cpp",
+    "locale": "cpp",
+    "memory": "cpp",
+    "tuple": "cpp",
+    "variant": "cpp"
   }
 }

@@ -96,7 +96,7 @@ int IPCThreadState::waitForResponse(Parcel *reply, int *acquireResult){
 
                     if (reply) {
                         if ((tr.flags & TF_STATUS_CODE) == 0) {
-                            reply->ipcSetDataReference(
+                            reply->ipcSetDataReference( //重要  对数据进行处理，它是Parcel.cpp的一个函数
                                 reinterpret_cast<const uint8_t*>(tr.data.ptr.buffer),
                                 tr.data_size,
                                 reinterpret_cast<const binder_size_t*>(tr.data.ptr.offsets),

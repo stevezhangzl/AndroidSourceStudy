@@ -43,7 +43,7 @@ class ServiceManagerProxy implements IServiceManager{
     //transact后，我们就可以直接获取到结果了。如果大家用过socket，就知道这是一种阻塞式的函数调用。因为涉及进程
     //间的通信，结果并不是马上就能获取到，所以Binder驱动一定要先将调用者线程挂起，直到有了结果才能把它唤醒。
     //这样做的好处就是调用者可以像进程内函数调用一样去编写程序，而不必考虑很多IPC的细节。
-    IBinder binder = reply.readStringBinder();
+    IBinder binder = reply.readStringBinder(); //这个也是JNI 调的native层的Parcel.cpp中的readStrongBinder()
     reply.recycle();
     data.recycle();
     return binder;

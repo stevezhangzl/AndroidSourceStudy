@@ -68,7 +68,7 @@ static void binder_transaction(struct binder_proc *proc,struct binder_thread *th
 
 
 	if (reply) { //处理BC_REPLY
-		in_reply_to = thread->transaction_stack;
+		in_reply_to = thread->transaction_stack;  //找到要reply给谁  这里的thread是Binder Server
 		if (in_reply_to == NULL) {
 			binder_user_error("%d:%d got reply transaction with no transaction stack\n",
 					  proc->pid, thread->pid);
@@ -88,7 +88,7 @@ static void binder_transaction(struct binder_proc *proc,struct binder_thread *th
 			goto err_bad_call_stack;
 		}
 		thread->transaction_stack = in_reply_to->to_parent;
-		target_thread = in_reply_to->from;
+		target_thread = in_reply_to->from; //目标对象所在的线程 Binder Client
 		if (target_thread == NULL) {
 			return_error = BR_DEAD_REPLY;
 			goto err_dead_binder;
@@ -104,7 +104,7 @@ static void binder_transaction(struct binder_proc *proc,struct binder_thread *th
 			target_thread = NULL;
 			goto err_dead_binder;
 		}
-		target_proc = target_thread->proc;
+		target_proc = target_thread->proc; //目标对象所在的进程  Binder Client
 	} else { //处理BC_TRANSACTION
 		if (tr->target.handle) { //目标进程handle不为0 是其他服务
 			//第一步、获取target_node
@@ -163,7 +163,7 @@ static void binder_transaction(struct binder_proc *proc,struct binder_thread *th
 
 	/* TODO: reuse incoming transaction for reply */
 	//第四步、生成一个 binder_transaction ，即上面的t 用于描述本次要进行的transaction  最后面，会加入目录进程的todo中， 这样当目标对象被唤醒时，就可以从这个队列中取出需要做的工作
-	t = kzalloc(sizeof(*t), GFP_KERNEL); //后面会加入todo
+	t = kzalloc(sizeof(*t), GFP_KERNEL); //后面会加入todo  走到BC_REPLY的时候t和tcomplete正好反过来  现在发起者是Binder Server而接收者是Binder Client
 	if (t == NULL) {
 		return_error = BR_FAILED_REPLY;
 		goto err_alloc_t_failed;
@@ -266,132 +266,132 @@ static void binder_transaction(struct binder_proc *proc,struct binder_thread *th
 			return_error = BR_FAILED_REPLY;
 			goto err_bad_offset;
 		}
-		fp = (struct flat_binder_object *)(t->buffer->data + *offp);
-		switch (fp->type) {
-		case BINDER_TYPE_BINDER:
-		case BINDER_TYPE_WEAK_BINDER: {
-			struct binder_ref *ref;
-			struct binder_node *node = binder_get_node(proc, fp->binder);
-			if (node == NULL) {
-				node = binder_new_node(proc, fp->binder, fp->cookie);
+		fp = (struct flat_binder_object *)(t->buffer->data + *offp);  //获取一个binder_object
+		switch (fp->type) {	//这里负责把 BINDER_TYPE_BINDER （不能跨进程）转成 BINDER_TYPE_HANDLE（可以跨进程）
+			case BINDER_TYPE_BINDER:
+			case BINDER_TYPE_WEAK_BINDER: { 
+				struct binder_ref *ref;
+				struct binder_node *node = binder_get_node(proc, fp->binder);
 				if (node == NULL) {
-					return_error = BR_FAILED_REPLY;
-					goto err_binder_new_node_failed;
+					node = binder_new_node(proc, fp->binder, fp->cookie);
+					if (node == NULL) {
+						return_error = BR_FAILED_REPLY;
+						goto err_binder_new_node_failed;
+					}
+					node->min_priority = fp->flags & FLAT_BINDER_FLAG_PRIORITY_MASK;
+					node->accept_fds = !!(fp->flags & FLAT_BINDER_FLAG_ACCEPTS_FDS);
 				}
-				node->min_priority = fp->flags & FLAT_BINDER_FLAG_PRIORITY_MASK;
-				node->accept_fds = !!(fp->flags & FLAT_BINDER_FLAG_ACCEPTS_FDS);
-			}
-			if (fp->cookie != node->cookie) {
-				binder_user_error("%d:%d sending u%p node %d, cookie mismatch %p != %p\n",
-					proc->pid, thread->pid,
-					fp->binder, node->debug_id,
-					fp->cookie, node->cookie);
-				goto err_binder_get_ref_for_node_failed;
-			}
-			ref = binder_get_ref_for_node(target_proc, node);
-			if (ref == NULL) {
-				return_error = BR_FAILED_REPLY;
-				goto err_binder_get_ref_for_node_failed;
-			}
-			if (fp->type == BINDER_TYPE_BINDER)
-				fp->type = BINDER_TYPE_HANDLE;
-			else
-				fp->type = BINDER_TYPE_WEAK_HANDLE;
-			fp->handle = ref->desc;
-			binder_inc_ref(ref, fp->type == BINDER_TYPE_HANDLE,
-				       &thread->todo);
-
-			trace_binder_transaction_node_to_ref(t, node, ref);
-			binder_debug(BINDER_DEBUG_TRANSACTION,
-				     "        node %d u%p -> ref %d desc %d\n",
-				     node->debug_id, node->ptr, ref->debug_id,
-				     ref->desc);
-		} break;
-		case BINDER_TYPE_HANDLE:
-		case BINDER_TYPE_WEAK_HANDLE: {
-			struct binder_ref *ref = binder_get_ref(proc, fp->handle);
-			if (ref == NULL) {
-				binder_user_error("%d:%d got transaction with invalid handle, %ld\n",
-						proc->pid,
-						thread->pid, fp->handle);
-				return_error = BR_FAILED_REPLY;
-				goto err_binder_get_ref_failed;
-			}
-			if (ref->node->proc == target_proc) {
-				if (fp->type == BINDER_TYPE_HANDLE)
-					fp->type = BINDER_TYPE_BINDER;
-				else
-					fp->type = BINDER_TYPE_WEAK_BINDER;
-				fp->binder = ref->node->ptr;
-				fp->cookie = ref->node->cookie;
-				binder_inc_node(ref->node, fp->type == BINDER_TYPE_BINDER, 0, NULL);
-				trace_binder_transaction_ref_to_node(t, ref);
-				binder_debug(BINDER_DEBUG_TRANSACTION,
-					     "        ref %d desc %d -> node %d u%p\n",
-					     ref->debug_id, ref->desc, ref->node->debug_id,
-					     ref->node->ptr);
-			} else {
-				struct binder_ref *new_ref;
-				new_ref = binder_get_ref_for_node(target_proc, ref->node);
-				if (new_ref == NULL) {
+				if (fp->cookie != node->cookie) {
+					binder_user_error("%d:%d sending u%p node %d, cookie mismatch %p != %p\n",
+						proc->pid, thread->pid,
+						fp->binder, node->debug_id,
+						fp->cookie, node->cookie);
+					goto err_binder_get_ref_for_node_failed;
+				}
+				ref = binder_get_ref_for_node(target_proc, node);
+				if (ref == NULL) {
 					return_error = BR_FAILED_REPLY;
 					goto err_binder_get_ref_for_node_failed;
 				}
-				fp->handle = new_ref->desc;
-				binder_inc_ref(new_ref, fp->type == BINDER_TYPE_HANDLE, NULL);
-				trace_binder_transaction_ref_to_ref(t, ref,
-								    new_ref);
+				if (fp->type == BINDER_TYPE_BINDER) 
+					fp->type = BINDER_TYPE_HANDLE;  //类型变了
+				else
+					fp->type = BINDER_TYPE_WEAK_HANDLE;
+				fp->handle = ref->desc;  //值也相应的产生了变化
+				binder_inc_ref(ref, fp->type == BINDER_TYPE_HANDLE,
+								&thread->todo);
+
+				trace_binder_transaction_node_to_ref(t, node, ref);
 				binder_debug(BINDER_DEBUG_TRANSACTION,
-					     "        ref %d desc %d -> ref %d desc %d (node %d)\n",
-					     ref->debug_id, ref->desc, new_ref->debug_id,
-					     new_ref->desc, ref->node->debug_id);
-			}
-		} break;
+							"        node %d u%p -> ref %d desc %d\n",
+							node->debug_id, node->ptr, ref->debug_id,
+							ref->desc);
+			} break;
+			case BINDER_TYPE_HANDLE:
+			case BINDER_TYPE_WEAK_HANDLE: {  //如果这个object的类型是HANDLE
+				struct binder_ref *ref = binder_get_ref(proc, fp->handle);
+				if (ref == NULL) {
+					binder_user_error("%d:%d got transaction with invalid handle, %ld\n",
+							proc->pid,
+							thread->pid, fp->handle);
+					return_error = BR_FAILED_REPLY;
+					goto err_binder_get_ref_failed;
+				}
+				if (ref->node->proc == target_proc) { //目标进程和object所属进程是同一个的情况
+					if (fp->type == BINDER_TYPE_HANDLE)
+						fp->type = BINDER_TYPE_BINDER; //直接可以使用内存地址
+					else
+						fp->type = BINDER_TYPE_WEAK_BINDER;
+					fp->binder = ref->node->ptr;
+					fp->cookie = ref->node->cookie;
+					binder_inc_node(ref->node, fp->type == BINDER_TYPE_BINDER, 0, NULL);
+					trace_binder_transaction_ref_to_node(t, ref);
+					binder_debug(BINDER_DEBUG_TRANSACTION,
+								"        ref %d desc %d -> node %d u%p\n",
+								ref->debug_id, ref->desc, ref->node->debug_id,
+								ref->node->ptr);
+				} else { //object不在目标进程的范围 
+					struct binder_ref *new_ref;
+					new_ref = binder_get_ref_for_node(target_proc, ref->node);
+					if (new_ref == NULL) {
+						return_error = BR_FAILED_REPLY;
+						goto err_binder_get_ref_for_node_failed;
+					}
+					fp->handle = new_ref->desc;
+					binder_inc_ref(new_ref, fp->type == BINDER_TYPE_HANDLE, NULL);
+					trace_binder_transaction_ref_to_ref(t, ref,
+											new_ref);
+					binder_debug(BINDER_DEBUG_TRANSACTION,
+								"        ref %d desc %d -> ref %d desc %d (node %d)\n",
+								ref->debug_id, ref->desc, new_ref->debug_id,
+								new_ref->desc, ref->node->debug_id);
+				}
+			} break;
 
-		case BINDER_TYPE_FD: {
-			int target_fd;
-			struct file *file;
+			case BINDER_TYPE_FD: {
+				int target_fd;
+				struct file *file;
 
-			if (reply) {
-				if (!(in_reply_to->flags & TF_ACCEPT_FDS)) {
-					binder_user_error("%d:%d got reply with fd, %ld, but target does not allow fds\n",
+				if (reply) {  
+					if (!(in_reply_to->flags & TF_ACCEPT_FDS)) {
+						binder_user_error("%d:%d got reply with fd, %ld, but target does not allow fds\n",
+							proc->pid, thread->pid, fp->handle);
+						return_error = BR_FAILED_REPLY;
+						goto err_fd_not_allowed;
+					}
+				} else if (!target_node->accept_fds) {
+					binder_user_error("%d:%d got transaction with fd, %ld, but target does not allow fds\n",
 						proc->pid, thread->pid, fp->handle);
 					return_error = BR_FAILED_REPLY;
 					goto err_fd_not_allowed;
 				}
-			} else if (!target_node->accept_fds) {
-				binder_user_error("%d:%d got transaction with fd, %ld, but target does not allow fds\n",
-					proc->pid, thread->pid, fp->handle);
-				return_error = BR_FAILED_REPLY;
-				goto err_fd_not_allowed;
-			}
 
-			file = fget(fp->handle);
-			if (file == NULL) {
-				binder_user_error("%d:%d got transaction with invalid fd, %ld\n",
-					proc->pid, thread->pid, fp->handle);
-				return_error = BR_FAILED_REPLY;
-				goto err_fget_failed;
-			}
-			target_fd = task_get_unused_fd_flags(target_proc, O_CLOEXEC);
-			if (target_fd < 0) {
-				fput(file);
-				return_error = BR_FAILED_REPLY;
-				goto err_get_unused_fd_failed;
-			}
-			task_fd_install(target_proc, target_fd, file);
-			trace_binder_transaction_fd(t, fp->handle, target_fd);
-			binder_debug(BINDER_DEBUG_TRANSACTION,
-				     "        fd %ld -> %d\n", fp->handle, target_fd);
-			/* TODO: fput? */
-			fp->handle = target_fd;
-		} break;
+				file = fget(fp->handle);
+				if (file == NULL) {
+					binder_user_error("%d:%d got transaction with invalid fd, %ld\n",
+						proc->pid, thread->pid, fp->handle);
+					return_error = BR_FAILED_REPLY;
+					goto err_fget_failed;
+				}
+				target_fd = task_get_unused_fd_flags(target_proc, O_CLOEXEC);
+				if (target_fd < 0) {
+					fput(file);
+					return_error = BR_FAILED_REPLY;
+					goto err_get_unused_fd_failed;
+				}
+				task_fd_install(target_proc, target_fd, file);
+				trace_binder_transaction_fd(t, fp->handle, target_fd);
+				binder_debug(BINDER_DEBUG_TRANSACTION,
+							"        fd %ld -> %d\n", fp->handle, target_fd);
+				/* TODO: fput? */
+				fp->handle = target_fd;
+			} break;
 
-		default:
-			binder_user_error("%d:%d got transaction with invalid object type, %lx\n",
-				proc->pid, thread->pid, fp->type);
-			return_error = BR_FAILED_REPLY;
-			goto err_bad_object_type;
+			default:
+				binder_user_error("%d:%d got transaction with invalid object type, %lx\n",
+					proc->pid, thread->pid, fp->type);
+				return_error = BR_FAILED_REPLY;
+				goto err_bad_object_type;
 		}
 	}
 
@@ -567,126 +567,126 @@ retry:
 			break;
 
 		switch (w->type) {
-		case BINDER_WORK_TRANSACTION: {
-			t = container_of(w, struct binder_transaction, work); //从从binder_work中取到t
-		} break;
-		case BINDER_WORK_TRANSACTION_COMPLETE: { //是这个类型
-			cmd = BR_TRANSACTION_COMPLETE; //这里又写入一个BR_TRANSCATION_COMPLETE 
-			if (put_user(cmd, (uint32_t __user *)ptr)) //写入上述的cmd
-				return -EFAULT;
-			ptr += sizeof(uint32_t);
+			case BINDER_WORK_TRANSACTION: {
+				t = container_of(w, struct binder_transaction, work); //从从binder_work中取到t 也就是binder_transaction数据
+			} break;
+			case BINDER_WORK_TRANSACTION_COMPLETE: { //是这个类型
+				cmd = BR_TRANSACTION_COMPLETE; //这里又写入一个BR_TRANSCATION_COMPLETE 
+				if (put_user(cmd, (uint32_t __user *)ptr)) //写入上述的cmd
+					return -EFAULT;
+				ptr += sizeof(uint32_t);
 
-			binder_stat_br(proc, thread, cmd); //统计信息
-			binder_debug(BINDER_DEBUG_TRANSACTION_COMPLETE,
-				     "%d:%d BR_TRANSACTION_COMPLETE\n",
-				     proc->pid, thread->pid);
+				binder_stat_br(proc, thread, cmd); //统计信息
+				binder_debug(BINDER_DEBUG_TRANSACTION_COMPLETE,
+							"%d:%d BR_TRANSACTION_COMPLETE\n",
+							proc->pid, thread->pid);
 
-			list_del(&w->entry);
-			kfree(w);
-			binder_stats_deleted(BINDER_STAT_TRANSACTION_COMPLETE);
-		} break;
-		case BINDER_WORK_NODE: {
-			struct binder_node *node = container_of(w, struct binder_node, work);
-			uint32_t cmd = BR_NOOP;
-			const char *cmd_name;
-			int strong = node->internal_strong_refs || node->local_strong_refs;
-			int weak = !hlist_empty(&node->refs) || node->local_weak_refs || strong;
-			if (weak && !node->has_weak_ref) {
-				cmd = BR_INCREFS;
-				cmd_name = "BR_INCREFS";
-				node->has_weak_ref = 1;
-				node->pending_weak_ref = 1;
-				node->local_weak_refs++;
-			} else if (strong && !node->has_strong_ref) {
-				cmd = BR_ACQUIRE;
-				cmd_name = "BR_ACQUIRE";
-				node->has_strong_ref = 1;
-				node->pending_strong_ref = 1;
-				node->local_strong_refs++;
-			} else if (!strong && node->has_strong_ref) {
-				cmd = BR_RELEASE;
-				cmd_name = "BR_RELEASE";
-				node->has_strong_ref = 0;
-			} else if (!weak && node->has_weak_ref) {
-				cmd = BR_DECREFS;
-				cmd_name = "BR_DECREFS";
-				node->has_weak_ref = 0;
-			}
-			if (cmd != BR_NOOP) {
+				list_del(&w->entry);
+				kfree(w);
+				binder_stats_deleted(BINDER_STAT_TRANSACTION_COMPLETE);
+			} break;
+			case BINDER_WORK_NODE: {
+				struct binder_node *node = container_of(w, struct binder_node, work);
+				uint32_t cmd = BR_NOOP;
+				const char *cmd_name;
+				int strong = node->internal_strong_refs || node->local_strong_refs;
+				int weak = !hlist_empty(&node->refs) || node->local_weak_refs || strong;
+				if (weak && !node->has_weak_ref) {
+					cmd = BR_INCREFS;
+					cmd_name = "BR_INCREFS";
+					node->has_weak_ref = 1;
+					node->pending_weak_ref = 1;
+					node->local_weak_refs++;
+				} else if (strong && !node->has_strong_ref) {
+					cmd = BR_ACQUIRE;
+					cmd_name = "BR_ACQUIRE";
+					node->has_strong_ref = 1;
+					node->pending_strong_ref = 1;
+					node->local_strong_refs++;
+				} else if (!strong && node->has_strong_ref) {
+					cmd = BR_RELEASE;
+					cmd_name = "BR_RELEASE";
+					node->has_strong_ref = 0;
+				} else if (!weak && node->has_weak_ref) {
+					cmd = BR_DECREFS;
+					cmd_name = "BR_DECREFS";
+					node->has_weak_ref = 0;
+				}
+				if (cmd != BR_NOOP) {
+					if (put_user(cmd, (uint32_t __user *)ptr))
+						return -EFAULT;
+					ptr += sizeof(uint32_t);
+					if (put_user(node->ptr, (void * __user *)ptr))
+						return -EFAULT;
+					ptr += sizeof(void *);
+					if (put_user(node->cookie, (void * __user *)ptr))
+						return -EFAULT;
+					ptr += sizeof(void *);
+
+					binder_stat_br(proc, thread, cmd);
+					binder_debug(BINDER_DEBUG_USER_REFS,
+								"%d:%d %s %d u%p c%p\n",
+								proc->pid, thread->pid, cmd_name, node->debug_id, node->ptr, node->cookie);
+				} else {
+					list_del_init(&w->entry);
+					if (!weak && !strong) {
+						binder_debug(BINDER_DEBUG_INTERNAL_REFS,
+									"%d:%d node %d u%p c%p deleted\n",
+									proc->pid, thread->pid, node->debug_id,
+									node->ptr, node->cookie);
+						rb_erase(&node->rb_node, &proc->nodes);
+						kfree(node);
+						binder_stats_deleted(BINDER_STAT_NODE);
+					} else {
+						binder_debug(BINDER_DEBUG_INTERNAL_REFS,
+									"%d:%d node %d u%p c%p state unchanged\n",
+									proc->pid, thread->pid, node->debug_id, node->ptr,
+									node->cookie);
+					}
+				}
+			} break;
+			case BINDER_WORK_DEAD_BINDER:
+			case BINDER_WORK_DEAD_BINDER_AND_CLEAR:
+			case BINDER_WORK_CLEAR_DEATH_NOTIFICATION: {
+				struct binder_ref_death *death;
+				uint32_t cmd;
+
+				death = container_of(w, struct binder_ref_death, work);
+				if (w->type == BINDER_WORK_CLEAR_DEATH_NOTIFICATION)
+					cmd = BR_CLEAR_DEATH_NOTIFICATION_DONE;
+				else
+					cmd = BR_DEAD_BINDER;
 				if (put_user(cmd, (uint32_t __user *)ptr))
 					return -EFAULT;
 				ptr += sizeof(uint32_t);
-				if (put_user(node->ptr, (void * __user *)ptr))
+				if (put_user(death->cookie, (void * __user *)ptr))
 					return -EFAULT;
 				ptr += sizeof(void *);
-				if (put_user(node->cookie, (void * __user *)ptr))
-					return -EFAULT;
-				ptr += sizeof(void *);
-
 				binder_stat_br(proc, thread, cmd);
-				binder_debug(BINDER_DEBUG_USER_REFS,
-					     "%d:%d %s %d u%p c%p\n",
-					     proc->pid, thread->pid, cmd_name, node->debug_id, node->ptr, node->cookie);
-			} else {
-				list_del_init(&w->entry);
-				if (!weak && !strong) {
-					binder_debug(BINDER_DEBUG_INTERNAL_REFS,
-						     "%d:%d node %d u%p c%p deleted\n",
-						     proc->pid, thread->pid, node->debug_id,
-						     node->ptr, node->cookie);
-					rb_erase(&node->rb_node, &proc->nodes);
-					kfree(node);
-					binder_stats_deleted(BINDER_STAT_NODE);
-				} else {
-					binder_debug(BINDER_DEBUG_INTERNAL_REFS,
-						     "%d:%d node %d u%p c%p state unchanged\n",
-						     proc->pid, thread->pid, node->debug_id, node->ptr,
-						     node->cookie);
-				}
-			}
-		} break;
-		case BINDER_WORK_DEAD_BINDER:
-		case BINDER_WORK_DEAD_BINDER_AND_CLEAR:
-		case BINDER_WORK_CLEAR_DEATH_NOTIFICATION: {
-			struct binder_ref_death *death;
-			uint32_t cmd;
+				binder_debug(BINDER_DEBUG_DEATH_NOTIFICATION,
+							"%d:%d %s %p\n",
+								proc->pid, thread->pid,
+								cmd == BR_DEAD_BINDER ?
+								"BR_DEAD_BINDER" :
+								"BR_CLEAR_DEATH_NOTIFICATION_DONE",
+								death->cookie);
 
-			death = container_of(w, struct binder_ref_death, work);
-			if (w->type == BINDER_WORK_CLEAR_DEATH_NOTIFICATION)
-				cmd = BR_CLEAR_DEATH_NOTIFICATION_DONE;
-			else
-				cmd = BR_DEAD_BINDER;
-			if (put_user(cmd, (uint32_t __user *)ptr))
-				return -EFAULT;
-			ptr += sizeof(uint32_t);
-			if (put_user(death->cookie, (void * __user *)ptr))
-				return -EFAULT;
-			ptr += sizeof(void *);
-			binder_stat_br(proc, thread, cmd);
-			binder_debug(BINDER_DEBUG_DEATH_NOTIFICATION,
-				     "%d:%d %s %p\n",
-				      proc->pid, thread->pid,
-				      cmd == BR_DEAD_BINDER ?
-				      "BR_DEAD_BINDER" :
-				      "BR_CLEAR_DEATH_NOTIFICATION_DONE",
-				      death->cookie);
-
-			if (w->type == BINDER_WORK_CLEAR_DEATH_NOTIFICATION) {
-				list_del(&w->entry);
-				kfree(death);
-				binder_stats_deleted(BINDER_STAT_DEATH);
-			} else
-				list_move(&w->entry, &proc->delivered_death);
-			if (cmd == BR_DEAD_BINDER)
-				goto done; /* DEAD_BINDER notifications can cause transactions */
-		} break;
+				if (w->type == BINDER_WORK_CLEAR_DEATH_NOTIFICATION) {
+					list_del(&w->entry);
+					kfree(death);
+					binder_stats_deleted(BINDER_STAT_DEATH);
+				} else
+					list_move(&w->entry, &proc->delivered_death);
+				if (cmd == BR_DEAD_BINDER)
+					goto done; /* DEAD_BINDER notifications can cause transactions */
+			} break;
 		}
 
 		if (!t)
 			continue;
 
 		BUG_ON(t->buffer == NULL);
-		if (t->buffer->target_node) {
+		if (t->buffer->target_node) { //这里因为Binder Client里进行过copy from user 把用户进程数据copy到buffer里 
 			struct binder_node *target_node = t->buffer->target_node;
 			tr.target.ptr = target_node->ptr;
 			tr.cookie =  target_node->cookie;
@@ -697,7 +697,7 @@ retry:
 			else if (!(t->flags & TF_ONE_WAY) ||
 				 t->saved_priority > target_node->min_priority)
 				binder_set_nice(target_node->min_priority);
-			cmd = BR_TRANSACTION;
+			cmd = BR_TRANSACTION;   //给tr 写入指令 BR_TRANSACTION 交给SM处理
 		} else {
 			tr.target.ptr = NULL;
 			tr.cookie = NULL;
@@ -721,10 +721,10 @@ retry:
 		tr.data.ptr.offsets = tr.data.ptr.buffer + ALIGN(t->buffer->data_size,sizeof(void *));
 
 		//SM进程，把BR_TRANSACTION 写入命令
-		if (put_user(cmd, (uint32_t __user *)ptr))
+		if (put_user(cmd, (uint32_t __user *)ptr))  //写cmd写进ptr
 			return -EFAULT;
 		ptr += sizeof(uint32_t); //移动指针
-		if (copy_to_user(ptr, &tr, sizeof(tr)))  //拷贝数据  拷贝的就是Binder Client向Binder驱动中写入的数据  mOut
+		if (copy_to_user(ptr, &tr, sizeof(tr)))  //拷贝数据  拷贝的就是Binder Client向Binder驱动中写入的数据  mOut  这里是把Binder驱动的tr copy to 用户进程的ptr
 			return -EFAULT;
 		ptr += sizeof(tr);
 
@@ -752,7 +752,7 @@ retry:
 			binder_stats_deleted(BINDER_STAT_TRANSACTION);
 		}
 		break;
-	}
+	}  //SM进程从Binder驱动中读取到 Binder Client写入的东西，然后去binder_parse里处理
 
 done:
 

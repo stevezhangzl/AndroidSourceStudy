@@ -72,6 +72,78 @@ fail_open:
 }
 
 
+static struct flat_binder_object *bio_alloc_obj(struct binder_io *bio)
+{
+    struct flat_binder_object *obj;
+
+    obj = bio_alloc(bio, sizeof(*obj));  //确定obj的具体地址
+
+    if (obj && bio->offs_avail) {
+        bio->offs_avail--;  //个数减一
+        *bio->offs++ = ((char*) obj) - ((char*) bio->data0); //原来offset区域用来记录每次data区域的写入大小的，这是“可变长度数据”的一种存储方法
+        return obj;
+    }
+
+    bio->flags |= BIO_F_OVERFLOW;
+    return NULL;
+}
+
+//初始化reply  binder_io是ServiceManager内部用于存储binder object的一种数据结构
+void bio_init(struct binder_io *bio, void *data,
+              size_t maxdata, size_t maxoffs)
+{
+    size_t n = maxoffs * sizeof(size_t); //最大偏移4个，共16字节
+
+    if (n > maxdata) {
+        bio->flags = BIO_F_OVERFLOW;
+        bio->data_avail = 0;
+        bio->offs_avail = 0;
+        return;
+    }
+
+    bio->data = bio->data0 = (char *) data + n;
+    bio->offs = bio->offs0 = data;
+    bio->data_avail = maxdata - n;
+    bio->offs_avail = maxoffs;
+    bio->flags = 0;
+}
+
+uint32_t bio_get_ref(struct binder_io *bio)
+{
+    struct flat_binder_object *obj;
+
+    obj = _bio_get_obj(bio);
+    if (!obj)
+        return 0;
+
+    if (obj->type == BINDER_TYPE_HANDLE)
+        return obj->handle;
+
+    return 0;
+}
+
+//没有返回值，所以这个新创建的obj要与reply产生关系，看bio_alloc_obj 传入了reply
+void bio_put_ref(struct binder_io *bio, uint32_t handle)
+{
+    //这里的关系是这样的 reply 也就是binder_io中有binder_object  obj的handle是SM查找到的Service指针（最终转为ibinder）
+    struct flat_binder_object *obj;
+
+    if (handle)
+        obj = bio_alloc_obj(bio);  //handle之前查出的句柄
+    else
+        obj = bio_alloc(bio, sizeof(*obj));
+
+    if (!obj)
+        return;
+
+    obj->flags = 0x7f | FLAT_BINDER_FLAG_ACCEPTS_FDS;
+    obj->type = BINDER_TYPE_HANDLE;  //注意这个类型，后面还会用到
+    obj->handle = handle;  //将handle保存到obj中
+    obj->cookie = 0;
+}
+
+
+
 //servicemanager启动得很早，能保证它是系统中第一个向Binder驱动注册成管家的程序。
 int binder_become_context_manager(struct binder_state *bs)
 {
@@ -109,7 +181,7 @@ int binder_parse(struct binder_state *bs, struct binder_io *bio,
             ptr += sizeof(struct binder_ptr_cookie);
             break;
         case BR_TRANSACTION: { //这个命令的处理，主要由func来完成  然后将结果返回Binder驱动
-            struct binder_transaction_data *txn = (struct binder_transaction_data *) ptr;
+            struct binder_transaction_data *txn = (struct binder_transaction_data *) ptr;  //这个是Binder驱动中拷贝过来的ptr 转成binder_transaction_data
             if ((end - ptr) < sizeof(*txn)) {
                 ALOGE("parse: txn too small!\n");
                 return -1;
@@ -118,17 +190,20 @@ int binder_parse(struct binder_state *bs, struct binder_io *bio,
             if (func) { //这个函数是svcmgr_handler()
                 unsigned rdata[256/4];
                 struct binder_io msg;
+                //这里注意reply的数据格式
                 struct binder_io reply; //这里是binder_io结构体 binder_io是SM内部用于存储binder object的结构体
                 int res;
 
+                //为reply初始化
                 bio_init(&reply, rdata, sizeof(rdata), 4);
                 bio_init_from_txn(&msg, txn);
-                res = func(bs, txn, &msg, &reply); //具体处理消息
+                res = func(bs, txn, &msg, &reply); //具体处理消息 svcmgr_handler处理请求
                 if (txn->flags & TF_ONE_WAY) {
                     binder_free_buffer(bs, txn->data.ptr.buffer);
                 } else {
                     //将执行结果回复给底层Binder驱动，进而传递给 客户端 ，然后binder_parse会进入下一轮的while循环
-                    binder_send_reply(bs, &reply, txn->data.ptr.buffer, res); //回应消息处理结果
+                    //这里要进行数据组织 主要是binder_transaction_data的拼装
+                    binder_send_reply(bs, &reply, txn->data.ptr.buffer, res); //回应消息处理结果，将reply发回给驱动
                 }
             }
             ptr += sizeof(*txn); //处理完成，跳过这一段数据 指针向前运动
@@ -217,6 +292,63 @@ void binder_loop(struct binder_state *bs, binder_handler func)
             break;
         }
     }
+}
+
+
+
+int binder_write(struct binder_state *bs, void *data, size_t len)
+{
+    //数据填入binder_write_read
+    struct binder_write_read bwr;
+    int res;
+
+    bwr.write_size = len;
+    bwr.write_consumed = 0;
+    bwr.write_buffer = (uintptr_t) data; //将data放入bwr
+    bwr.read_size = 0; //不读取数据，只写入
+    bwr.read_consumed = 0;
+    bwr.read_buffer = 0;
+    res = ioctl(bs->fd, BINDER_WRITE_READ, &bwr);  //与Binder驱动交互
+    if (res < 0) {
+        fprintf(stderr,"binder_write: ioctl failed (%s)\n",
+                strerror(errno));
+    }
+    return res;
+}
+
+
+void binder_send_reply(struct binder_state *bs,
+                       struct binder_io *reply,
+                       binder_uintptr_t buffer_to_free,
+                       int status)
+{
+    struct {
+        uint32_t cmd_free;
+        binder_uintptr_t buffer;
+        uint32_t cmd_reply;
+        struct binder_transaction_data txn; //对应Binder驱动中的binder_transaction_data数据格式
+    } __attribute__((packed)) data;
+
+    data.cmd_free = BC_FREE_BUFFER;
+    data.buffer = buffer_to_free;
+    data.cmd_reply = BC_REPLY;  //注意这里的命令类型
+    data.txn.target.ptr = 0;
+    data.txn.cookie = 0;
+    data.txn.code = 0;
+    if (status) {
+        data.txn.flags = TF_STATUS_CODE;
+        data.txn.data_size = sizeof(int);
+        data.txn.offsets_size = 0;
+        data.txn.data.ptr.buffer = (uintptr_t)&status;
+        data.txn.data.ptr.offsets = 0;
+    } else {  //没有error的情况
+        data.txn.flags = 0;
+        data.txn.data_size = reply->data - reply->data0;
+        data.txn.offsets_size = ((char*) reply->offs) - ((char*) reply->offs0);
+        data.txn.data.ptr.buffer = (uintptr_t)reply->data0;   //reply中数据区起始地址
+        data.txn.data.ptr.offsets = (uintptr_t)reply->offs0;    //offset区起始地址
+    }
+    binder_write(bs, &data, sizeof(data));  //写入驱动
 }
 
 
