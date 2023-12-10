@@ -50,6 +50,19 @@ class ServiceManagerProxy implements IServiceManager{
   }
 
 
+  public void addService(String name, IBinder service, boolean allowIsolated)throws RemoteException {
+    Parcel data = Parcel.obtain();
+    Parcel reply = Parcel.obtain();
+    data.writeInterfaceToken(IServiceManager.descriptor);
+    data.writeString(name);
+    data.writeStrongBinder(service); //写入一个StrongBinder 这里调用的是anroid_os_Parcel.cpp中的 writeStrongBinder
+    data.writeInt(allowIsolated ? 1 : 0);
+    mRemote.transact(ADD_SERVICE_TRANSACTION, data, reply, 0);
+    reply.recycle();
+    data.recycle();
+  }
+
+
   //IBinder是餐馆的电话号码，先记下来，等需要的时候通过这个号码获取餐馆提供的服务。比如getService()这个接口
   private IBinder mRemote;
 

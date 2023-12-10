@@ -62,3 +62,94 @@ int unflatten_binder(const ProcessState* proc,const Parcel& in, IBinder* out)
     }
     return BAD_TYPE;
 }
+
+
+inline static  finish_flatten_binder(const sp<IBinder>& /*binder*/, const flat_binder_object& flat, Parcel* out)
+{
+    return out->writeObject(flat, false);
+}
+
+
+int flatten_binder(const sp<ProcessState>& /*proc*/,const sp<IBinder>& binder, Parcel* out)
+{
+    flat_binder_object obj;
+
+    obj.flags = 0x7f | FLAT_BINDER_FLAG_ACCEPTS_FDS;
+    if (binder != NULL) {
+        IBinder *local = binder->localBinder(); //不为空
+        if (!local) {
+            BpBinder *proxy = binder->remoteBinder();
+            if (proxy == NULL) {
+                ALOGE("null proxy");
+            }
+            const int32_t handle = proxy ? proxy->handle() : 0;
+            obj.type = BINDER_TYPE_HANDLE;
+            obj.binder = 0; /* Don't pass uninitialized stack data to a remote process */
+            obj.handle = handle;
+            obj.cookie = 0;
+        } else { //走这个分支
+            obj.type = BINDER_TYPE_BINDER;
+            obj.binder = reinterpret_cast<uintptr_t>(local->getWeakRefs());
+            obj.cookie = reinterpret_cast<uintptr_t>(local);
+        }
+    } else {
+        obj.type = BINDER_TYPE_BINDER;
+        obj.binder = 0;
+        obj.cookie = 0;
+    }
+
+    return finish_flatten_binder(binder, obj, out);
+}
+
+
+int Parcel::writeStrongBinder(const sp<IBinder>& val)
+{
+    return flatten_binder(ProcessState::self(), val, this);
+}
+
+
+
+
+int Parcel::writeObject(const flat_binder_object& val, bool nullMetaData){
+    const bool enoughData = (mDataPos+sizeof(val)) <= mDataCapacity;
+    const bool enoughObjects = mObjectsSize < mObjectsCapacity;
+    if (enoughData && enoughObjects) {
+restart_write:
+        *reinterpret_cast<flat_binder_object*>(mData+mDataPos) = val;
+
+        // remember if it's a file descriptor
+        if (val.type == BINDER_TYPE_FD) {
+            if (!mAllowFds) {
+                // fail before modifying our object index
+                return FDS_NOT_ALLOWED;
+            }
+            mHasFds = mFdsKnown = true;
+        }
+
+        // Need to write meta-data?
+        if (nullMetaData || val.binder != 0) {
+            mObjects[mObjectsSize] = mDataPos;
+            acquire_object(ProcessState::self(), val, this, &mOpenAshmemSize);
+            mObjectsSize++;
+        }
+
+        return finishWrite(sizeof(flat_binder_object));
+    }
+
+    if (!enoughData) {
+        const int err = growData(sizeof(val));
+        if (err != NO_ERROR) return err;
+    }
+    if (!enoughObjects) {
+        size_t newSize = ((mObjectsSize+2)*3)/2;
+        if (newSize < mObjectsSize) return NO_MEMORY;   // overflow
+        binder_size_t* objects = (binder_size_t*)realloc(mObjects, newSize*sizeof(binder_size_t));
+        if (objects == NULL) return NO_MEMORY;
+        mObjects = objects;
+        mObjectsCapacity = newSize;
+    }
+
+    goto restart_write;
+}
+
+

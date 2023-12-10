@@ -1,8 +1,14 @@
+//https://cs.android.com/android/platform/superproject/+/android-7.0.0_r1:frameworks/base/core/java/android/os/Binder.java?hl=zh-cn
+
 
 
 
 
 public class Binder implements IBinder{
+
+    public Binder(){
+        init(); //这里会调用native中的binder_init 生成JavaBBinder
+    }
 
     public final boolean transact(int code, Parcel data, Parcel reply,int flags) throws RemoteException {
         if (false) Log.v("Binder", "Transact: " + code + " to " + this);
@@ -24,6 +30,17 @@ public class Binder implements IBinder{
       }
       return null;
     }
+
+
+
+    private native final void init();
+    private native final void destroy();
+
+
+    /* mObject is used by native code, do not remove or rename */
+    private long mObject;
+    private IInterface mOwner;
+    private String mDescriptor;
 }
 
 

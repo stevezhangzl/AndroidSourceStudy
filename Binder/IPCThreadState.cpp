@@ -400,9 +400,7 @@ int IPCThreadState::executeCommand(int cmd)
     case BR_ACQUIRE:
         refs = (RefBase::weakref_type*)mIn.readPointer();
         obj = (BBinder*)mIn.readPointer();
-        ALOG_ASSERT(refs->refBase() == obj,
-                   "BR_ACQUIRE: object %p does not match cookie %p (expected %p)",
-                   refs, obj, refs->refBase());
+        ALOG_ASSERT(refs->refBase() == obj,"BR_ACQUIRE: object %p does not match cookie %p (expected %p)",refs, obj, refs->refBase());
         obj->incStrong(mProcess.get());
         IF_LOG_REMOTEREFS() {
             LOG_REMOTEREFS("BR_ACQUIRE from driver on %p", obj);
@@ -521,13 +519,11 @@ int IPCThreadState::executeCommand(int cmd)
                     << ", offsets addr="
                     << reinterpret_cast<const size_t*>(tr.data.ptr.offsets) << endl;
             }
-            if (tr.target.ptr) {
+            if (tr.target.ptr) {  //指定了目标对象
                 // We only have a weak reference on the target object, so we must first try to
                 // safely acquire a strong reference before doing anything else with it.
-                if (reinterpret_cast<RefBase::weakref_type*>(
-                        tr.target.ptr)->attemptIncStrong(this)) {
-                    error = reinterpret_cast<BBinder*>(tr.cookie)->transact(tr.code, buffer,
-                            &reply, tr.flags);
+                if (reinterpret_cast<RefBase::weakref_type*>(tr.target.ptr)->attemptIncStrong(this)) {
+                    error = reinterpret_cast<BBinder*>(tr.cookie)->transact(tr.code, buffer,&reply, tr.flags); //转成BBinder执行transact
                     reinterpret_cast<BBinder*>(tr.cookie)->decStrong(this);
                 } else {
                     error = UNKNOWN_TRANSACTION;
@@ -597,5 +593,97 @@ int IPCThreadState::executeCommand(int cmd)
         mLastError = result;
     }
     
+    return result;
+}
+
+
+
+void IPCThreadState::joinThreadPool(bool isMain)
+{
+    LOG_THREADPOOL("**** THREAD %p (PID %d) IS JOINING THE THREAD POOL\n", (void*)pthread_self(), getpid());
+
+    mOut.writeInt32(isMain ? BC_ENTER_LOOPER : BC_REGISTER_LOOPER);
+    
+    // This thread may have been spawned by a thread that was in the background
+    // scheduling group, so first we will make sure it is in the foreground
+    // one to avoid performing an initial transaction in the background.
+    set_sched_policy(mMyThreadId, SP_FOREGROUND);
+        
+    status_t result;
+    do {
+        processPendingDerefs();
+        // now get the next command to be processed, waiting if necessary
+        result = getAndExecuteCommand();
+
+        if (result < NO_ERROR && result != TIMED_OUT && result != -ECONNREFUSED && result != -EBADF) {
+            ALOGE("getAndExecuteCommand(fd=%d) returned unexpected error %d, aborting",mProcess->mDriverFD, result);
+            abort();
+        }
+        
+        // Let this thread exit the thread pool if it is no longer
+        // needed and it is not the main process thread.
+        if(result == TIMED_OUT && !isMain) {
+            break;
+        }
+    } while (result != -ECONNREFUSED && result != -EBADF);
+
+    LOG_THREADPOOL("**** THREAD %p (PID %d) IS LEAVING THE THREAD POOL err=%p\n",(void*)pthread_self(), getpid(), (void*)result);
+    
+    mOut.writeInt32(BC_EXIT_LOOPER);
+    talkWithDriver(false);
+}
+
+
+
+
+int IPCThreadState::getAndExecuteCommand()
+{
+    int result;
+    int32_t cmd;
+
+    result = talkWithDriver(); //核心
+    if (result >= NO_ERROR) {
+        size_t IN = mIn.dataAvail();
+        if (IN < sizeof(int32_t)) return result;
+        cmd = mIn.readInt32();
+        IF_LOG_COMMANDS() {
+            alog << "Processing top-level Command: "
+                 << getReturnString(cmd) << endl;
+        }
+
+        pthread_mutex_lock(&mProcess->mThreadCountLock);
+        mProcess->mExecutingThreadsCount++;
+        if (mProcess->mExecutingThreadsCount >= mProcess->mMaxThreads &&
+                mProcess->mStarvationStartTimeMs == 0) {
+            mProcess->mStarvationStartTimeMs = uptimeMillis();
+        }
+        pthread_mutex_unlock(&mProcess->mThreadCountLock);
+
+        result = executeCommand(cmd);
+
+        pthread_mutex_lock(&mProcess->mThreadCountLock);
+        mProcess->mExecutingThreadsCount--;
+        if (mProcess->mExecutingThreadsCount < mProcess->mMaxThreads &&
+                mProcess->mStarvationStartTimeMs != 0) {
+            int64_t starvationTimeMs = uptimeMillis() - mProcess->mStarvationStartTimeMs;
+            if (starvationTimeMs > 100) {
+                ALOGE("binder thread pool (%zu threads) starved for %" PRId64 " ms",
+                      mProcess->mMaxThreads, starvationTimeMs);
+            }
+            mProcess->mStarvationStartTimeMs = 0;
+        }
+        pthread_cond_broadcast(&mProcess->mThreadCountDecrement);
+        pthread_mutex_unlock(&mProcess->mThreadCountLock);
+
+        // After executing the command, ensure that the thread is returned to the
+        // foreground cgroup before rejoining the pool.  The driver takes care of
+        // restoring the priority, but doesn't do anything with cgroups so we
+        // need to take care of that here in userspace.  Note that we do make
+        // sure to go in the foreground after executing a transaction, but
+        // there are other callbacks into user code that could have changed
+        // our group so we want to make absolutely sure it is put back.
+        set_sched_policy(mMyThreadId, SP_FOREGROUND);
+    }
+
     return result;
 }

@@ -12,7 +12,8 @@ class IPCThreadState{
 
     int executeCommand(int cmd);
     int writeTransactionData(int cmd, int binderFlags,int handle, int code, const Parcel& data, int* statusBuffer);
-
+    void joinThreadPool(bool isMain);
+    int getAndExecuteCommand();
   private:
     IPCThreadState();
     ~IPCThreadState();

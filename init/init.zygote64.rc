@@ -1,0 +1,10 @@
+service zygote /system/bin/app_process64 -Xzygote /system/bin --zygote --start-system-server  #name=zygote path=/system/bin/app_process64  不像servicemanager是独立进程，而是由app_process通过参数启动的  看app_main.cpp
+    class main  #所属main  而不是core  其他同class的有netd、ddebuggerd、rild等
+    socket zygote stream 660 root system  #创建一个名为/dev/socket/<name>的unix domain socket 然后将fd值传给启动它的进程 <type>包括 dgram,stream和seqpacket 而user和group默认值是0
+    onrestart write /sys/android_power/request_state wake
+    onrestart write /sys/power/state on #当此服务重启时，执行某些命令
+    onrestart restart audioserver
+    onrestart restart cameraserver
+    onrestart restart media
+    onrestart restart netd
+    writepid /dev/cpuset/foreground/tasks /dev/stune/foreground/tasks

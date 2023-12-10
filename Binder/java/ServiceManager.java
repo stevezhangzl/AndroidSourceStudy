@@ -33,4 +33,22 @@ public final class ServiceManager{
     return null;
   }
 
+
+  public static void addService(String name, IBinder service, boolean allowIsolated) {
+    try {
+        getIServiceManager().addService(name, service, allowIsolated);
+    } catch (RemoteException e) {
+        Log.e(TAG, "error in addService", e);
+    }
+  }
+
+
+  public static void addService(String name, IBinder service) {
+    try {
+        getIServiceManager().addService(name, service, false);
+    } catch (RemoteException e) {
+        Log.e(TAG, "error in addService", e);
+    }
+  }
+
 }

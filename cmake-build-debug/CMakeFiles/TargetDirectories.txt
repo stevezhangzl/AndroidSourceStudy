@@ -1,0 +1,3 @@
+/Users/zhanglong/Desktop/work/android-githup/AndroidSourceStudy/cmake-build-debug/CMakeFiles/AndroidSourceStudy.dir
+/Users/zhanglong/Desktop/work/android-githup/AndroidSourceStudy/cmake-build-debug/CMakeFiles/edit_cache.dir
+/Users/zhanglong/Desktop/work/android-githup/AndroidSourceStudy/cmake-build-debug/CMakeFiles/rebuild_cache.dir

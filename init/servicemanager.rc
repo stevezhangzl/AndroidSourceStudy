@@ -1,0 +1,22 @@
+# 是一个Linux程序   存储路径是/system/bin/servicemanagers
+
+
+
+
+
+
+service servicemanager /system/bin/servicemanager
+    class core animation  # 所属class是core
+    user system
+    group system readproc
+    critical     #是系统关键进程  意味着   进程在4分钟内异常退出超过4次，则设备将重启进入还原模式
+    file /dev/kmsg w
+    onrestart setprop servicemanager.ready false
+    onrestart restart --only-if-running apexd
+    onrestart restart audioserver
+    onrestart restart gatekeeperd
+    onrestart class_restart --only-enabled main
+    onrestart class_restart --only-enabled hal
+    onrestart class_restart --only-enabled early_hal
+    task_profiles ServiceCapacityLow
+    shutdown critical

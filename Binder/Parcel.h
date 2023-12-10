@@ -1,5 +1,7 @@
 
 
+class flat_binder_object;
+
 class Parcel{
   public:
     Parcel();
@@ -11,4 +13,8 @@ class Parcel{
 
 
     int readStrongBinder(IBinder* val) const;
+
+    int writeStrongBinder(const sp<IBinder>& val)
+
+    int writeObject(const flat_binder_object& val, bool nullMetaData);
 };

@@ -98,7 +98,7 @@ class wp{
 template<typename T>
 wp<T>::wp(T* other):m_ptr(other){
   if (other){
-    m_refs = other.createWeak(this);
+    m_refs = other->createWeak(this);
   }
   
 }

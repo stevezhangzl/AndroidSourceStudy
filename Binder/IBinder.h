@@ -2,14 +2,20 @@
 //https://cs.android.com/android/platform/superproject/+/android-7.0.0_r1:frameworks/native/include/binder/IBinder.h?hl=zh-cn
 
 
+
 #include <string>
+#include "ref/RefBase.h"
+
 
 class BpBinder;
 class IInterface;
 class Parcel;
 
 
-class IBinder{
+
+
+
+class IBinder : public virtual RefBase{
   public:
     enum{
       FIRST_CALL_TRANSACTION = 0x00000001,
