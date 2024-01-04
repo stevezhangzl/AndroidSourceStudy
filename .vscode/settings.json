@@ -26,5 +26,6 @@
     "locale": "cpp",
     "memory": "cpp",
     "filesystem": "cpp"
-  }
+  },
+  "cmake.configureOnOpen": false
 }
