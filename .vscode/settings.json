@@ -25,7 +25,15 @@
     "array": "cpp",
     "locale": "cpp",
     "memory": "cpp",
-    "filesystem": "cpp"
+    "filesystem": "cpp",
+    "gralloc.h": "c",
+    "fstream": "c",
+    "__mutex_base": "cpp",
+    "chrono": "cpp",
+    "__split_buffer": "cpp",
+    "queue": "cpp",
+    "condition_variable": "cpp",
+    "typeinfo": "cpp"
   },
   "cmake.configureOnOpen": false
 }
