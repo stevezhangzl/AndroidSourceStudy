@@ -33,7 +33,11 @@
     "__split_buffer": "cpp",
     "queue": "cpp",
     "condition_variable": "cpp",
-    "typeinfo": "cpp"
+    "typeinfo": "cpp",
+    "bitset": "cpp",
+    "deque": "cpp",
+    "initializer_list": "cpp",
+    "stack": "cpp"
   },
   "cmake.configureOnOpen": false
 }
