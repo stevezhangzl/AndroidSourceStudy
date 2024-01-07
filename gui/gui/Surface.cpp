@@ -253,7 +253,7 @@ int Surface::dequeueBuffer(android_native_buffer_t** buffer, int* fenceFd) {
     }
 
     if ((result & IGraphicBufferProducer::BUFFER_NEEDS_REALLOCATION) || gbuf == 0) {
-        result = mGraphicBufferProducer->requestBuffer(buf, &gbuf); //申请空间
+        result = mGraphicBufferProducer->requestBuffer(buf, &gbuf); //这个buffer是需要重新分配，申请空间
         if (result != NO_ERROR) {
             ALOGE("dequeueBuffer: IGraphicBufferProducer::requestBuffer failed: %d", result);
             mGraphicBufferProducer->cancelBuffer(buf, fence);
