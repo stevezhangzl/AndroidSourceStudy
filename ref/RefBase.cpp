@@ -24,7 +24,7 @@ class RefBase::weakref_impl : public RefBase::weakref_type{
 
     weakref_impl(RefBase* base):mStrong(INITIAL_STRONG_VALUE),mWeak(0),mBase(base),mFlags(0){}
 
-    void addStrongRef(const void*){}
+    void addStrongRef(const void*){};
     void removeStrongRef(const void*){}
     void addWeakRef(const void*){}
 };
@@ -33,26 +33,30 @@ class RefBase::weakref_impl : public RefBase::weakref_type{
 void RefBase::weakref_type::incWeak(const void* id){
   weakref_impl* const impl = static_cast<weakref_impl *>(this);
   impl->addWeakRef(id); //用于调试目的 
-  const int32_t c = android_atomic_inc(&impl->mWeak);
+  const int32_t c = android_atomic_inc(&impl->mWeak); //原子，android提供
 }
 
+
 RefBase::weakref_type* RefBase::createWeak(const void* id) const {
-  mRefs->incWeak(id); //增加弱引用计数
+  mRefs->incWeak(id); //使用的是weakref_type的实现对象，去增加弱引用计数
   return mRefs; //直接返回weakref_type对象
 }
 
+
+//同时增加弱引用和强引用的计数值
 void RefBase::incStrong(const void* id) const{
   weakref_impl* const refs = mRefs;
-  refs->incWeak(id);
+  refs->incWeak(id); //增加弱引用计数值
 
-  refs->addStrongRef(id);
-  const int32_t c = anroid_atomic_inc(&refs->mStrong);
+  refs->addStrongRef(id); //用于调试目的
+  const int32_t c = anroid_atomic_inc(&refs->mStrong); //增加强引用计数值
 
-  if (c!=INITIAL_STRONG_VALUE){
-    return;
+  if (c!=INITIAL_STRONG_VALUE){ //判断是一浊第一次
+    return;  //不是第一次直接返回
   }
 
-
+  //第一次1<<28 +1 所以要减掉INITIAL_STRONG_VALUE 才能得到1
+  android_atomic_add(-INITIAL_STRONG_VALUE,&refs->mStrong);
   refs->mBase->onFirstRef();
 }
 
@@ -73,3 +77,8 @@ void RefBase::decStrong(const void* id) const {
 void RefBase::weakref_type::decWeak(const void* id){
   
 }
+
+void RefBase::onFirstRef()
+{
+}
+
